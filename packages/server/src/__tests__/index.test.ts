@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
 import { httpRequest } from "./support/http-test-client.js";
-import { createTestServer, closeTestServer } from "./support/server-test-fixture.js";
+import { closeTestServer, createTestServer } from "./support/server-test-fixture.js";
 
 /**
  * Tests for server entry point (index.ts)
