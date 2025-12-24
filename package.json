@@ -1,0 +1,25 @@
+{
+  "name": "reliable-server-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Fault-tolerant single-agent command execution system",
+  "scripts": {
+    "build": "pnpm -r build",
+    "start:server": "pnpm --filter @reliable-server-agent/server start",
+    "start:agent": "pnpm --filter @reliable-server-agent/agent start",
+    "dev:server": "pnpm --filter @reliable-server-agent/server dev",
+    "dev:agent": "pnpm --filter @reliable-server-agent/agent dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "clean": "pnpm -r clean"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0",
+    "@vitest/coverage-v8": "^2.1.0"
+  }
+}
