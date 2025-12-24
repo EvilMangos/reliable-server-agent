@@ -1,54 +1,116 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## Project Overview
 
-This repository is for "reliable-server-agent" - Here is what our final goal should achieve.
+Repository: **reliable-server-agent**
+
+Goal: implement a fault-tolerant **Control Server** + **multiple Agents** executing two command types:
+
+- `DELAY`
+- `HTTP_GET_JSON`
+
+Key requirements:
+
+- persistence across restarts (server + agent)
+- survive crashes & restarts deterministically
+- **idempotent execution** (no duplicate command *execution*)
+- multiple agents supported (server assigns **at most one agent per command** at a time)
+
+We intentionally use a **pull-based queue** implemented by the server:
+- agents **poll/claim** work via HTTP
+- no message broker (no RabbitMQ)
+
+## Architecture
+
+Monorepo with pnpm workspaces:
 
 ```
-# Skipr – Backend Engineer Test Task
-## Fault-Tolerant Single-Agent Command Execution System
-**Tech:** Node.js + TypeScript  
-**Extras:** Docker, persistence (required)  
 
-# 🎯 Goal
-Implement a simple **fault-tolerant system** with:
+packages/
+├── server/   # Control Server - Express-based HTTP API + SQLite persistence
+├── agent/    # Agent - Pulls work, executes, heartbeats, reports results
+└── shared/   # Shared types, DTOs, constants
 
-- one **Control Server**
-- one **Agent**
-- two command types
-- ability to survive crashes & restarts
-- correct state restoration
-- idempotent execution (no duplicates)
-- AI use is permitted and encouraged 
+````
 
-# 🧩 System Overview
+### High-Level Flow
 
-## 1. Control Server
-A Node.js/TypeScript service that:
+1. Client creates commands via `POST /commands`.
+2. Agents repeatedly call `POST /commands/claim`.
+3. Server atomically assigns a command by issuing a **lease**:
+   - marks command `RUNNING`
+   - sets `agentId`, `leaseId`, `leaseExpiresAt`
+   - (for DELAY) persists deterministic `scheduledEndAt`
+4. Agent executes while periodically calling `POST /commands/:id/heartbeat` to extend lease.
+5. Agent reports completion via `POST /commands/:id/complete` (or `/fail`) with `leaseId`.
+6. Server accepts results **only** for the current active lease.
 
-- accepts commands  
-- persists their state  
-- exposes command status  
-- assigns one command at a time to the Agent (additional questions: what happens when multiple agents exist? agent restarts quickly? agent requests next command while one is running?)  
-- recovers state on restart / failure 
-- handles unfinished commands safely
+## Persistence
 
-### Required Endpoints
+### Server store: SQLite (required)
 
-#### **POST /commands**
+Use SQLite as the single source of truth for command lifecycle state.
+
+**Command record (conceptual fields):**
+- `id` (string)
+- `type` (`DELAY | HTTP_GET_JSON`)
+- `payloadJson` (string)
+- `status` (`PENDING | RUNNING | COMPLETED | FAILED`)
+- `resultJson` (string | null)
+- `error` (string | null)
+- `agentId` (string | null)
+- `leaseId` (string | null)
+- `leaseExpiresAt` (unix ms | null)
+- `createdAt` (unix ms)
+- `startedAt` (unix ms | null)
+- `attempt` (int, starts at 0)
+- `scheduledEndAt` (unix ms | null)  // used only for DELAY
+
+**Atomic claim rule (server invariant):**
+- at most **one active lease** per command at any time
+- only the holder of `(commandId, leaseId)` may complete/fail/heartbeat
+
+### Agent local journal (required for idempotent report)
+
+Agent persists a small journal on disk to avoid duplicate *execution* and to ensure it can re-report a finished result after crashes.
+
+Minimal journal file per agent:
+- path: `./.agent-state/<agentId>.json` (or configurable)
+- contents:
+  - `commandId`
+  - `leaseId`
+  - `type`
+  - `startedAt`
+  - `scheduledEndAt` (for DELAY)
+  - `httpSnapshot` (for HTTP_GET_JSON) optional
+  - `stage`: `CLAIMED | IN_PROGRESS | RESULT_SAVED`
+
+Rules:
+- journal is written with **atomic write** (temp file + rename)
+- journal is deleted only after server confirms completion/failure
+
+## API
+
+### Required endpoints (task)
+
+#### POST /commands
 Request:
 ```json
 { "type": "DELAY" | "HTTP_GET_JSON", "payload": {} }
-```
+````
+
 Response:
+
 ```json
 { "commandId": "string" }
 ```
 
-#### **GET /commands/:id**
+#### GET /commands/:id
+
 Response:
+
 ```json
 {
   "status": "PENDING" | "RUNNING" | "COMPLETED" | "FAILED",
@@ -57,79 +119,107 @@ Response:
 }
 ```
 
-### Server Requirements
-Server must:
+### Internal endpoints (allowed / used by agents)
 
-- maintain command lifecycle states
-- ensure no command runs twice (idempotency)
-- persist state across server restart
-- detect leftover RUNNING commands on startup
-- handle them deterministically (mark FAILED or return to PENDING — document your choice)
+#### POST /commands/claim
 
-Persistence can be:
-- JSON file
-- SQLite
-- LevelDB
-- anything deterministic
+Request:
 
+```json
+{ "agentId": "string", "maxLeaseMs": 30000 }
+```
 
+Response (200):
 
-## 2. Agent
-A Node.js/TS service that:
+```json
+{
+  "commandId": "string",
+  "type": "DELAY" | "HTTP_GET_JSON",
+  "payload": {},
+  "leaseId": "string",
+  "leaseExpiresAt": 0,
+  "startedAt": 0,
+  "scheduledEndAt": 0
+}
+```
 
-- starts
-- fetches commands from server
-- executes them
-- sends results back
-- can crash at random
-- after restart, must sync correctly with server
+Response (204): no work available.
 
-### Required Agent Behaviors
+Notes:
 
-- Poll for work
-- Execute DELAY and HTTP_GET_JSON
-- Return results to server
-- Detect unfinished command after crash
-- Prevent double execution
+* server picks the oldest `PENDING` command
+* server increments `attempt`
+* server sets `startedAt` only on the first transition to RUNNING for that attempt
 
-### Failure Simulation Flags
+#### POST /commands/:id/heartbeat
 
-#### `--kill-after=N`
-Crash after N seconds or N polling cycles.
+Request:
 
-#### `--random-failures`
-Random crashes during command execution.
+```json
+{ "agentId": "string", "leaseId": "string", "extendMs": 30000 }
+```
 
+Response: 204 on success, 409 if lease is not current.
 
+#### POST /commands/:id/complete
 
-# 🔧 Supported Command Types
+Request:
 
-## 1. DELAY
-Execute delay command and return result of the execution to server.
+```json
+{ "agentId": "string", "leaseId": "string", "result": {} }
+```
+
+Response: 204 on success, 409 if lease is not current.
+
+#### POST /commands/:id/fail
+
+Request:
+
+```json
+{ "agentId": "string", "leaseId": "string", "error": "string", "result": {} }
+```
+
+Response: 204 on success, 409 if lease is not current.
+
+## Command Semantics
+
+### 1) DELAY
 
 Input:
+
 ```json
-{ "ms": number }
+{ "ms": 5000 }
 ```
+
 Output example:
+
 ```json
 { "ok": true, "tookMs": 5034 }
 ```
 
+**Idempotency strategy (no duplicate waiting):**
+
+* Server persists `scheduledEndAt = startedAt + ms` *at claim time*.
+* Agent does not "sleep ms"; it waits until `scheduledEndAt`.
+* If it restarts mid-delay, it resumes by waiting only remaining time.
+
+`tookMs` should be computed as `now - startedAt` (or `scheduledEndAt - startedAt`; pick one and keep consistent).
+
 Edge cases:
-- crash mid-delay
-- crash after completing delay but before reporting result
 
+* crash mid-delay → new agent can claim later and finish without restarting the full delay
+* crash after delay completed but before reporting result → agent journal ensures it can re-report without re-waiting
 
-
-## 2. HTTP_GET_JSON
-Agent fetches JSON from URL and returns status + a body snippet.
+### 2) HTTP_GET_JSON
 
 Input:
+
 ```json
 { "url": "string" }
 ```
+
 Output:
+
 ```json
 {
   "status": number,
@@ -140,79 +230,123 @@ Output:
 }
 ```
 
+Handling rules:
 
+* redirects: do not follow; return `error: "Redirects not followed"`
+* timeout: 30s; return `error: "Request timeout"`
+* non-JSON: return raw string body
+* truncate body to 10_240 chars; set `truncated`
 
-# 🐳 Docker (Optional)
-Recommended but optional.
+**Idempotency strategy (avoid duplicate fetch after “done but not reported”):**
 
-Provide:
-- Server Dockerfile
-- Agent Dockerfile
-- docker-compose.yml to run both
+* After a successful fetch, agent writes `httpSnapshot` to journal (`stage = RESULT_SAVED`) **before** calling `/complete`.
+* On restart, if journal contains `httpSnapshot`, agent must **replay completion** without refetching.
 
-If you skip Docker:  
-**Provide clear local run instructions.**
+Note: if the agent crashes mid-request (before result exists), the command may be retried later; this is acceptable because the prior attempt did not complete.
 
+## Lifecycle & Deterministic Crash Recovery
 
+### Server is authoritative
 
-# 🧪 Testing Requirements
-You must test and verify:
+Server owns the lifecycle state machine and enforces idempotency via leases.
 
-- Server restarts
-- Agent crash scenarios
-- Edge cases during execution
-- Idempotency
+**States:**
 
+* `PENDING`: waiting to be claimed
+* `RUNNING`: leased to an agent
+* `COMPLETED`: final success
+* `FAILED`: final failure
 
+### Lease behavior
 
-# 📦 What To Deliver
-1. Source code (link to your repo)
-2. (Optional) Docker setup
-3. README with:
-    - how to run
-    - architecture overview
-    - persistence approach
-    - crash recovery explanation
-    - trade-offs & decisions
-4. Meaningful commit history
-5. Reflection:
-    - how you used AI
-    - where AI was wrong
-    - what required manual debugging
-```
+* A command in RUNNING must have a non-expired `leaseExpiresAt`.
+* Heartbeats extend lease.
+* Only the current lease holder may complete/fail.
 
-## Build Commands
+### Server startup recovery (deterministic)
 
-- `pnpm install` - Install all dependencies
-- `pnpm build` - Build all packages
-- `pnpm start:server` - Start the control server
-- `pnpm start:agent` - Start the agent
-- `pnpm dev:server` - Run server in development mode (with watch)
-- `pnpm dev:agent` - Run agent in development mode (with watch)
-- `pnpm test` - Run tests across all packages
-- `pnpm clean` - Clean build artifacts
+On server startup:
 
-## Architecture
+* find commands with `status = RUNNING`
+* if `leaseExpiresAt <= now`: set them to `PENDING` (retry)
+* else keep them RUNNING
 
-This is a **monorepo** using pnpm workspaces with the following packages:
+This satisfies the requirement to detect leftover RUNNING and handle deterministically.
 
-```
-packages/
-├── server/   # Control Server - Express-based HTTP API
-├── agent/    # Agent - Polls server and executes commands
-└── shared/   # Shared types and utilities
-```
+### Agent startup behavior (idempotent)
 
-### Environment Variables
+Agent startup must **NOT** mark commands FAILED based on local state.
 
-See `.env.example` for all configuration options:
-- `SERVER_PORT` / `SERVER_HOST` - Server binding
-- `AGENT_ID` - Unique agent identifier
-- `SERVER_URL` - URL the agent uses to connect to server
-- `POLL_INTERVAL_MS` - Agent polling interval
-- `DATA_DIR` - Directory for persistence (default: `./data`)
+Instead:
 
-### Tech Stack
-- Node.js 18+ with TypeScript (ES2022, NodeNext modules)
-- Express for the Control Server HTTP API
-- JSON file or equivalent for persistence
+1. If agent journal exists:
+
+    * If `stage = RESULT_SAVED`: attempt `/complete` (or `/fail`) with saved `leaseId` and saved result.
+
+        * If server returns 204 → delete journal.
+        * If server returns 409 → delete journal (lease is no longer valid; server has moved on deterministically).
+    * If `type = DELAY` and `scheduledEndAt` exists: resume waiting until `scheduledEndAt` and then `/complete` using current lease (if still valid).
+
+        * If lease expired, stop and go back to claim loop.
+    * Otherwise: drop into claim loop (safe fallback).
+2. Normal loop: claim → execute → report → delete journal.
+
+## Multiple Agents
+
+* Supported by design.
+* Each agent operates independently and may process one command at a time.
+* Server guarantees:
+
+    * no two agents execute the same command concurrently
+    * no duplicate completions (lease-gated)
+
+## Failure Simulation Flags (Agent CLI)
+
+* `--kill-after=N`
+  Kill the agent after N seconds (or N polling cycles; choose one and document in README).
+* `--random-failures`
+  Randomly crash during execution / between stages (claim, in-progress, result-saved, report).
+
+Implement failures to exercise:
+
+* crash mid-delay
+* crash after delay done but before reporting
+* crash after HTTP fetch but before reporting
+* crash during polling/idle
+
+## Testing Requirements
+
+Add integration tests covering:
+
+* Server restart restores state from SQLite
+* Agent crash mid-delay → command completes once with deterministic scheduledEndAt
+* Agent crash after HTTP fetch before reporting → replays completion from journal; verify only one completion and (optionally) single fetch against a local mock server counter
+* Lease expiry → RUNNING becomes PENDING deterministically and is retried
+* Idempotency: server rejects stale `/complete` (409) and does not change final states
+
+Prefer black-box tests:
+
+* spin up server + one or more agents (child processes)
+* use a local HTTP stub server for `HTTP_GET_JSON`
+
+## Implementation Notes / Priorities
+
+* Use SQLite transactions for claim/heartbeat/complete to avoid race conditions.
+* Use atomic file writes for agent journal.
+* Keep shared DTOs in `packages/shared`.
+* Keep logs clear: include `agentId`, `commandId`, `leaseId`, `attempt`, state transitions.
+
+## TODO Plan (high-level)
+
+1. Shared: types for DTOs, command/result shapes, status enum
+2. Server: SQLite schema + store (atomic claim + lease updates)
+3. Server: HTTP routes (required + internal agent endpoints)
+4. Server: startup recovery for expired leases
+5. Agent: claim loop + heartbeat loop
+6. Agent: journal persistence + replay on restart
+7. Agent: DELAY executor using `scheduledEndAt`
+8. Agent: HTTP_GET_JSON executor + journaling of snapshot before reporting
+9. Agent: failure simulation flags
+10. Tests: integration tests for restarts/crashes/idempotency
+11. (Optional) Docker: server/agent Dockerfiles + compose
+12. Docs: README (run, architecture, persistence, recovery, trade-offs, AI reflection)
