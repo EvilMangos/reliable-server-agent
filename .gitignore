@@ -30,3 +30,5 @@ pnpm-debug.log*
 
 # Test coverage
 coverage/
+
+.task-reports
