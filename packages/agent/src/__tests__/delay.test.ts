@@ -12,25 +12,28 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DelayPayload } from "@reliable-server-agent/shared";
-import { createTestDelayExecutor, createTestJournal, withMockedRandom } from "./test-utils";
-
-// Alias for clarity in delay tests - creates a DELAY-type journal
-const createDelayJournal = createTestJournal;
+import {
+	createTestDelayExecutor,
+	createTestJournal,
+	setupFakeTimers,
+	teardownFakeTimers,
+	withMockedRandom,
+} from "./test-utils";
 
 describe("DELAY Executor", () => {
 	beforeEach(() => {
-		vi.useFakeTimers();
+		setupFakeTimers();
 	});
 
 	afterEach(() => {
-		vi.useRealTimers();
+		teardownFakeTimers();
 	});
 
 	describe("DelayExecutor.execute", () => {
 		describe("normal execution", () => {
 			it("waits until scheduledEndAt, not full ms duration", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: now + 5000,
 				});
@@ -53,7 +56,7 @@ describe("DELAY Executor", () => {
 
 			it("returns correct result structure with ok and tookMs", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: now + 1000,
 				});
@@ -72,7 +75,7 @@ describe("DELAY Executor", () => {
 
 			it("calculates tookMs as now minus startedAt", async () => {
 				const startedAt = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt,
 					scheduledEndAt: startedAt + 3000,
 				});
@@ -93,7 +96,7 @@ describe("DELAY Executor", () => {
 				const startedAt = now - 3000; // Started 3 seconds ago
 				const scheduledEndAt = now + 2000; // Should end in 2 more seconds
 
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt,
 					scheduledEndAt,
 					stage: "IN_PROGRESS", // Resuming after crash
@@ -116,7 +119,7 @@ describe("DELAY Executor", () => {
 				const startedAt = now - 6000; // Started 6 seconds ago
 				const scheduledEndAt = now - 1000; // Already past
 
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt,
 					scheduledEndAt,
 					stage: "IN_PROGRESS",
@@ -138,7 +141,7 @@ describe("DELAY Executor", () => {
 		describe("lease expiry handling", () => {
 			it("is cancellable when lease becomes invalid", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: now + 10000,
 				});
@@ -166,7 +169,7 @@ describe("DELAY Executor", () => {
 
 			it("checks lease validity periodically during wait", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: now + 30000, // Long delay
 				});
@@ -194,7 +197,7 @@ describe("DELAY Executor", () => {
 		describe("journal updates", () => {
 			it("updates journal stage to IN_PROGRESS before waiting", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: now + 1000,
 					stage: "CLAIMED",
@@ -213,7 +216,7 @@ describe("DELAY Executor", () => {
 
 			it("does not update stage if already IN_PROGRESS (recovery case)", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now - 500,
 					scheduledEndAt: now + 500,
 					stage: "IN_PROGRESS", // Already in progress
@@ -233,7 +236,7 @@ describe("DELAY Executor", () => {
 		describe("random failure injection", () => {
 			it("supports onRandomFailure callback injection", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: now + 2000,
 				});
@@ -261,7 +264,7 @@ describe("DELAY Executor", () => {
 
 			it("throws or exits when random failure is triggered", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: now + 5000,
 				});
@@ -289,7 +292,7 @@ describe("DELAY Executor", () => {
 		describe("edge cases", () => {
 			it("handles zero ms delay", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: now, // Zero delay
 				});
@@ -305,7 +308,7 @@ describe("DELAY Executor", () => {
 			it("handles very long delays correctly", async () => {
 				const now = Date.now();
 				const longDelay = 3600000; // 1 hour
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: now + longDelay,
 				});
@@ -322,7 +325,7 @@ describe("DELAY Executor", () => {
 
 			it("handles null scheduledEndAt by computing from startedAt + ms", async () => {
 				const now = Date.now();
-				const journal = createDelayJournal({
+				const journal = createTestJournal({
 					startedAt: now,
 					scheduledEndAt: null, // Not set by server (edge case)
 				});
@@ -335,6 +338,61 @@ describe("DELAY Executor", () => {
 
 				expect(result.ok).toBe(true);
 				expect(result.tookMs).toBeGreaterThanOrEqual(2000);
+			});
+
+			it("handles negative ms value by completing immediately", async () => {
+				const now = Date.now();
+				const journal = createTestJournal({
+					startedAt: now,
+					scheduledEndAt: now - 1000, // Negative delay results in past scheduledEndAt
+				});
+				const { executor } = createTestDelayExecutor(journal);
+
+				const payload: DelayPayload = { ms: -1000 };
+				const result = await executor.execute(payload, { journal, checkLeaseValid: () => true });
+
+				// When scheduledEndAt is in the past, it completes immediately
+				expect(result.ok).toBe(true);
+				// tookMs is scheduledEndAt - startedAt which equals -1000, but the implementation
+				// returns the actual computed value based on the journal
+				expect(result.tookMs).toBe(-1000);
+			});
+
+			it("handles non-integer ms value by using it directly", async () => {
+				const now = Date.now();
+				const msValue = 5.5;
+				const journal = createTestJournal({
+					startedAt: now,
+					scheduledEndAt: now + msValue,
+				});
+				const { executor } = createTestDelayExecutor(journal);
+
+				const payload: DelayPayload = { ms: msValue };
+				const resultPromise = executor.execute(payload, { journal, checkLeaseValid: () => true });
+
+				// Advance by 6ms to cover the fractional value
+				await vi.advanceTimersByTimeAsync(6);
+				const result = await resultPromise;
+
+				expect(result.ok).toBe(true);
+				expect(result.tookMs).toBe(msValue);
+			});
+
+			it("handles very small positive ms value (1ms)", async () => {
+				const now = Date.now();
+				const journal = createTestJournal({
+					startedAt: now,
+					scheduledEndAt: now + 1,
+				});
+				const { executor } = createTestDelayExecutor(journal);
+
+				const payload: DelayPayload = { ms: 1 };
+				const resultPromise = executor.execute(payload, { journal, checkLeaseValid: () => true });
+				await vi.advanceTimersByTimeAsync(1);
+				const result = await resultPromise;
+
+				expect(result.ok).toBe(true);
+				expect(result.tookMs).toBe(1);
 			});
 		});
 	});

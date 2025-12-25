@@ -106,14 +106,14 @@ export class HttpGetJsonExecutor implements Executor<HttpGetJsonPayload, HttpGet
 
 		this.logger.info(`HTTP_GET_JSON: status=${result.status}, error=${result.error}, bytesReturned=${result.bytesReturned}`);
 
-		// Simulate random failure after fetch but before saving
+		// Save snapshot to journal BEFORE any failure point (idempotency)
+		this.journalManager.updateHttpSnapshot(journal, result);
+
+		// Simulate random failure after saving snapshot but before reporting
 		if (this.onRandomFailure && Math.random() < RANDOM_FAILURE_PROBABILITY) {
-			this.logger.warn("Random failure triggered after HTTP fetch, before saving snapshot");
+			this.logger.warn("Random failure triggered after saving snapshot, before reporting");
 			this.onRandomFailure();
 		}
-
-		// Save snapshot to journal BEFORE reporting (idempotency)
-		this.journalManager.updateHttpSnapshot(journal, result);
 
 		return result;
 	}

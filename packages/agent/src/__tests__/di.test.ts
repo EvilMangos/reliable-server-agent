@@ -1,6 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import * as os from "node:os";
-import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	AGENT,
 	CONFIG,
@@ -16,7 +14,7 @@ import {
 } from "../di";
 import type { Container } from "../di";
 import type { AgentConfig } from "../types";
-import { createDefaultAgentConfig } from "./test-utils";
+import { cleanupTempDir, createDefaultAgentConfig, createTempDir, createUniqueTokenName } from "./test-utils";
 
 describe("DI Container", () => {
 	let container: Container;
@@ -53,7 +51,7 @@ describe("DI Container", () => {
 
 	describe("singleton registration", () => {
 		it("should return same instance for singleton", () => {
-			const token = createToken<{ value: number }>("TestSingleton-" + Date.now());
+			const token = createToken<{ value: number }>(createUniqueTokenName("TestSingleton"));
 			let callCount = 0;
 
 			container.singleton(token, () => {
@@ -72,7 +70,7 @@ describe("DI Container", () => {
 
 	describe("transient registration", () => {
 		it("should return new instance for transient", () => {
-			const token = createToken<{ value: number }>("TestTransient-" + Date.now());
+			const token = createToken<{ value: number }>(createUniqueTokenName("TestTransient"));
 			let callCount = 0;
 
 			container.transient(token, () => {
@@ -92,7 +90,7 @@ describe("DI Container", () => {
 
 	describe("instance registration", () => {
 		it("should return registered instance", () => {
-			const token = createToken<{ name: string }>("TestInstance-" + Date.now());
+			const token = createToken<{ name: string }>(createUniqueTokenName("TestInstance"));
 			const instance = { name: "test" };
 
 			container.instance(token, instance);
@@ -103,14 +101,14 @@ describe("DI Container", () => {
 
 	describe("has", () => {
 		it("should return true for registered token", () => {
-			const token = createToken<string>("TestHas-" + Date.now());
+			const token = createToken<string>(createUniqueTokenName("TestHas"));
 			container.instance(token, "test");
 
 			expect(container.has(token)).toBe(true);
 		});
 
 		it("should return false for unregistered token", () => {
-			const token = createToken<string>("TestHasUnregistered-" + Date.now());
+			const token = createToken<string>(createUniqueTokenName("TestHasUnregistered"));
 
 			expect(container.has(token)).toBe(false);
 		});
@@ -118,14 +116,14 @@ describe("DI Container", () => {
 
 	describe("resolve", () => {
 		it("should throw for unregistered token", () => {
-			const token = createToken<string>("Unknown-" + Date.now());
+			const token = createToken<string>(createUniqueTokenName("Unknown"));
 
 			expect(() => container.resolve(token)).toThrow(/No registration found/);
 		});
 
 		it("should resolve dependencies from factory", () => {
-			const configToken = createToken<{ url: string }>("Config-" + Date.now());
-			const clientToken = createToken<{ config: { url: string } }>("Client-" + Date.now());
+			const configToken = createToken<{ url: string }>(createUniqueTokenName("Config"));
+			const clientToken = createToken<{ config: { url: string } }>(createUniqueTokenName("Client"));
 
 			container.instance(configToken, { url: "http://test" });
 			container.singleton(clientToken, (c) => ({
@@ -139,7 +137,7 @@ describe("DI Container", () => {
 
 	describe("createChild", () => {
 		it("should inherit from parent", () => {
-			const token = createToken<string>("ParentToken-" + Date.now());
+			const token = createToken<string>(createUniqueTokenName("ParentToken"));
 			container.instance(token, "parent-value");
 
 			const child = container.createChild();
@@ -148,7 +146,7 @@ describe("DI Container", () => {
 		});
 
 		it("should override parent registrations", () => {
-			const token = createToken<string>("OverrideToken-" + Date.now());
+			const token = createToken<string>(createUniqueTokenName("OverrideToken"));
 			container.instance(token, "parent-value");
 
 			const child = container.createChild();
@@ -159,7 +157,7 @@ describe("DI Container", () => {
 		});
 
 		it("should check parent with has", () => {
-			const token = createToken<string>("ParentHasToken-" + Date.now());
+			const token = createToken<string>(createUniqueTokenName("ParentHasToken"));
 			container.instance(token, "value");
 
 			const child = container.createChild();
@@ -174,8 +172,12 @@ describe("Composition Root", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = path.join(os.tmpdir(), `di-test-${Date.now()}`);
+		tempDir = createTempDir("di-test-");
 		config = createDefaultAgentConfig(tempDir);
+	});
+
+	afterEach(() => {
+		cleanupTempDir(tempDir);
 	});
 
 	describe("createAgentContainer", () => {

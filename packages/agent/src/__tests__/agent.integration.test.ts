@@ -18,47 +18,45 @@ import type {
 } from "@reliable-server-agent/shared";
 import { COMMAND_TYPE } from "@reliable-server-agent/shared";
 import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
 import {
+	type FetchMockContext,
+	captureFetchContext,
+	cleanupTempDir,
 	createDefaultAgentConfig,
-	createTestJournal,
+	createTempDir,
 	mockFetchNoWork,
 	mockFetchWith409OnComplete,
 	mockFetchWithCallTracking,
 	mockFetchWithClaim,
+	mockFetchWithClaimAndCapture,
 	mockFetchWithNetworkError,
 	mockFetchWithServerError,
+	setupFakeTimers,
+	teardownFakeTimers,
+	writeJournalFile,
 } from "./test-utils";
 import { AgentImpl } from "../index.js";
 
 describe("Agent Integration", () => {
 	let tempDir: string;
-	let originalFetch: typeof global.fetch;
+	let fetchContext: FetchMockContext;
 
 	beforeEach(() => {
-		vi.useFakeTimers();
-		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-test-"));
-		originalFetch = global.fetch;
+		setupFakeTimers();
+		tempDir = createTempDir();
+		fetchContext = captureFetchContext();
 	});
 
 	afterEach(() => {
-		vi.useRealTimers();
-		vi.restoreAllMocks();
-		global.fetch = originalFetch;
-		// Clean up temp directory
-		try {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		} catch {
-			// Ignore cleanup errors
-		}
+		teardownFakeTimers();
+		fetchContext.restore();
+		cleanupTempDir(tempDir);
 	});
 
 	describe("Journal Recovery on Startup", () => {
 		it("recovers from RESULT_SAVED stage and attempts completion", async () => {
 			// Setup: Create a journal file with saved result
-			const journalPath = path.join(tempDir, "agent-123.json");
-			const journal = createTestJournal({
+			writeJournalFile(tempDir, "agent-123", {
 				commandId: "cmd-456",
 				leaseId: "lease-789",
 				type: COMMAND_TYPE.HTTP_GET_JSON,
@@ -73,7 +71,6 @@ describe("Agent Integration", () => {
 				},
 				stage: "RESULT_SAVED",
 			});
-			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			// Track calls to the complete endpoint via fetch mock
 			let completeCalledWith: { commandId: string; leaseId: string; result: unknown } | null = null;
@@ -107,8 +104,7 @@ describe("Agent Integration", () => {
 		});
 
 		it("deletes journal after server confirms completion with 204", async () => {
-			const journalPath = path.join(tempDir, "agent-456.json");
-			const journal = createTestJournal({
+			const { journalPath } = writeJournalFile(tempDir, "agent-456", {
 				commandId: "cmd-789",
 				leaseId: "lease-012",
 				type: COMMAND_TYPE.DELAY,
@@ -116,7 +112,6 @@ describe("Agent Integration", () => {
 				scheduledEndAt: Date.now() - 1000, // Already past
 				stage: "RESULT_SAVED",
 			});
-			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-456" }));
 
@@ -129,8 +124,7 @@ describe("Agent Integration", () => {
 		});
 
 		it("deletes journal when server returns 409 (lease no longer valid)", async () => {
-			const journalPath = path.join(tempDir, "agent-789.json");
-			const journal = createTestJournal({
+			const { journalPath } = writeJournalFile(tempDir, "agent-789", {
 				commandId: "cmd-stale",
 				leaseId: "lease-stale",
 				type: COMMAND_TYPE.HTTP_GET_JSON,
@@ -145,7 +139,6 @@ describe("Agent Integration", () => {
 				},
 				stage: "RESULT_SAVED",
 			});
-			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-789" }));
 
@@ -159,8 +152,7 @@ describe("Agent Integration", () => {
 
 		it("resumes DELAY command by waiting remaining time", async () => {
 			const now = Date.now();
-			const journalPath = path.join(tempDir, "agent-delay.json");
-			const journal = createTestJournal({
+			writeJournalFile(tempDir, "agent-delay", {
 				commandId: "cmd-delay",
 				leaseId: "lease-delay",
 				type: COMMAND_TYPE.DELAY,
@@ -168,7 +160,6 @@ describe("Agent Integration", () => {
 				scheduledEndAt: now + 2000, // 2s remaining
 				stage: "IN_PROGRESS",
 			});
-			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-delay" }));
 
@@ -298,10 +289,9 @@ describe("Agent Integration", () => {
 
 	describe("409 Response Handling", () => {
 		it("deletes journal and continues to poll when completion returns 409", async () => {
-			const journalPath = path.join(tempDir, "agent-409.json");
 			// Use RESULT_SAVED stage so no waiting is needed - we're testing the 409 handling,
 			// not the delay execution itself
-			const journal = createTestJournal({
+			const { journalPath } = writeJournalFile(tempDir, "agent-409", {
 				commandId: "cmd-409",
 				leaseId: "lease-409",
 				type: COMMAND_TYPE.DELAY,
@@ -309,7 +299,6 @@ describe("Agent Integration", () => {
 				scheduledEndAt: Date.now() - 1000, // Already past
 				stage: "RESULT_SAVED",
 			});
-			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-409" }));
 
@@ -372,27 +361,14 @@ describe("Agent Integration", () => {
 				scheduledEndAt: Date.now() + 500,
 			};
 
-			let completeBody: Record<string, unknown> | null = null;
-			global.fetch = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
-				if (url.includes("/claim")) {
-					return Promise.resolve({
-						status: 200,
-						ok: true,
-						json: () => Promise.resolve(claimResponse),
-					});
-				}
-				if (url.includes("/complete")) {
-					completeBody = JSON.parse(options?.body as string);
-					return Promise.resolve({ status: 204, ok: true });
-				}
-				return Promise.resolve({ status: 204, ok: true });
-			});
+			const { getCompleteBody } = mockFetchWithClaimAndCapture(claimResponse);
 
 			const iterationPromise = agent.runOneIteration();
 			await vi.advanceTimersByTimeAsync(500);
 			await iterationPromise;
 
 			// Check that result has DELAY structure
+			const completeBody = getCompleteBody();
 			expect(completeBody).not.toBeNull();
 			expect(completeBody!.result).toEqual(
 				expect.objectContaining({
