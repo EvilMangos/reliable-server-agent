@@ -12,7 +12,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-	AgentJournal,
 	ClaimCommandResponse,
 	DelayPayload,
 	HttpGetJsonPayload,
@@ -20,6 +19,7 @@ import type {
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { createDefaultAgentConfig, createTestJournal, mockFetchNoWork, mockFetchWithClaim } from "./test-utils.js";
 
 describe("Agent Integration", () => {
 	let tempDir: string;
@@ -44,7 +44,7 @@ describe("Agent Integration", () => {
 		it("recovers from RESULT_SAVED stage and attempts completion", async () => {
 			// Setup: Create a journal file with saved result
 			const journalPath = path.join(tempDir, "agent-123.json");
-			const journal: AgentJournal = {
+			const journal = createTestJournal({
 				commandId: "cmd-456",
 				leaseId: "lease-789",
 				type: "HTTP_GET_JSON",
@@ -58,7 +58,7 @@ describe("Agent Integration", () => {
 					error: null,
 				},
 				stage: "RESULT_SAVED",
-			};
+			});
 			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			// Track calls to the complete endpoint via fetch mock
@@ -81,57 +81,34 @@ describe("Agent Integration", () => {
 
 			// Import and create agent
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-123",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-123" }));
 
 			// Run one iteration of recovery
 			await agent.recoverFromJournal();
 
 			// Should attempt to complete with saved result
 			expect(completeCalledWith).not.toBeNull();
-			expect(completeCalledWith?.commandId).toBe("cmd-456");
-			expect(completeCalledWith?.leaseId).toBe("lease-789");
-			expect(completeCalledWith?.result).toEqual(expect.objectContaining({ status: 200 }));
+			expect(completeCalledWith!.commandId).toBe("cmd-456");
+			expect(completeCalledWith!.leaseId).toBe("lease-789");
+			expect(completeCalledWith!.result).toEqual(expect.objectContaining({ status: 200 }));
 		});
 
 		it("deletes journal after server confirms completion with 204", async () => {
 			const journalPath = path.join(tempDir, "agent-456.json");
-			const journal: AgentJournal = {
+			const journal = createTestJournal({
 				commandId: "cmd-789",
 				leaseId: "lease-012",
 				type: "DELAY",
 				startedAt: Date.now() - 2000,
 				scheduledEndAt: Date.now() - 1000, // Already past
-				httpSnapshot: null,
 				stage: "RESULT_SAVED",
-			};
+			});
 			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-456",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-456" }));
 
-			// Mock fetch to return 204
-			global.fetch = vi.fn().mockResolvedValue({
-				status: 204,
-				ok: true,
-			});
+			mockFetchNoWork();
 
 			await agent.recoverFromJournal();
 
@@ -141,7 +118,7 @@ describe("Agent Integration", () => {
 
 		it("deletes journal when server returns 409 (lease no longer valid)", async () => {
 			const journalPath = path.join(tempDir, "agent-789.json");
-			const journal: AgentJournal = {
+			const journal = createTestJournal({
 				commandId: "cmd-stale",
 				leaseId: "lease-stale",
 				type: "HTTP_GET_JSON",
@@ -155,20 +132,11 @@ describe("Agent Integration", () => {
 					error: null,
 				},
 				stage: "RESULT_SAVED",
-			};
+			});
 			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-789",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-789" }));
 
 			// Mock fetch to return 409
 			global.fetch = vi.fn().mockResolvedValue({
@@ -185,34 +153,20 @@ describe("Agent Integration", () => {
 		it("resumes DELAY command by waiting remaining time", async () => {
 			const now = Date.now();
 			const journalPath = path.join(tempDir, "agent-delay.json");
-			const journal: AgentJournal = {
+			const journal = createTestJournal({
 				commandId: "cmd-delay",
 				leaseId: "lease-delay",
 				type: "DELAY",
 				startedAt: now - 3000, // Started 3s ago
 				scheduledEndAt: now + 2000, // 2s remaining
-				httpSnapshot: null,
 				stage: "IN_PROGRESS",
-			};
+			});
 			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-delay",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-delay" }));
 
-			// Mock fetch for completion
-			global.fetch = vi.fn().mockResolvedValue({
-				status: 204,
-				ok: true,
-			});
+			const fetchMock = mockFetchNoWork();
 
 			const recoveryPromise = agent.recoverFromJournal();
 
@@ -222,7 +176,7 @@ describe("Agent Integration", () => {
 			await recoveryPromise;
 
 			// Should have attempted completion
-			expect(global.fetch).toHaveBeenCalledWith(
+			expect(fetchMock).toHaveBeenCalledWith(
 				expect.stringContaining("/complete"),
 				expect.any(Object),
 			);
@@ -232,16 +186,7 @@ describe("Agent Integration", () => {
 	describe("Claim-Execute-Report Cycle", () => {
 		it("claims command, executes, and reports completion", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-cycle",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-cycle" }));
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-exec",
@@ -253,63 +198,28 @@ describe("Agent Integration", () => {
 				scheduledEndAt: Date.now() + 1000,
 			};
 
-			let _requestCount = 0;
-			global.fetch = vi.fn().mockImplementation((url: string) => {
-				_requestCount++;
-				if (url.includes("/claim")) {
-					return Promise.resolve({
-						status: 200,
-						ok: true,
-						json: () => Promise.resolve(claimResponse),
-					});
-				}
-				if (url.includes("/complete")) {
-					return Promise.resolve({
-						status: 204,
-						ok: true,
-					});
-				}
-				if (url.includes("/heartbeat")) {
-					return Promise.resolve({
-						status: 204,
-						ok: true,
-					});
-				}
-				return Promise.resolve({ status: 404, ok: false });
-			});
+			const fetchMock = mockFetchWithClaim(claimResponse);
 
 			const iterationPromise = agent.runOneIteration();
 			await vi.advanceTimersByTimeAsync(1000);
 			await iterationPromise;
 
 			// Should have called claim and complete
-			const fetchCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls;
-			expect(fetchCalls.some((call: string[]) => call[0].includes("/claim"))).toBe(true);
-			expect(fetchCalls.some((call: string[]) => call[0].includes("/complete"))).toBe(true);
+			const fetchCalls = fetchMock.mock.calls as [string, ...unknown[]][];
+			expect(fetchCalls.some((call) => call[0].includes("/claim"))).toBe(true);
+			expect(fetchCalls.some((call) => call[0].includes("/complete"))).toBe(true);
 		});
 
 		it("returns to poll loop when claim returns 204 (no work)", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-nowork",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-nowork" }));
 
-			global.fetch = vi.fn().mockResolvedValue({
-				status: 204,
-				ok: true,
-			});
+			const fetchMock = mockFetchNoWork();
 
 			await agent.runOneIteration();
 
 			// Should have called claim only once, no execute/complete
-			const fetchCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls;
+			const fetchCalls = fetchMock.mock.calls as [string, ...unknown[]][];
 			expect(fetchCalls.length).toBe(1);
 			expect(fetchCalls[0][0]).toContain("/claim");
 		});
@@ -318,16 +228,10 @@ describe("Agent Integration", () => {
 	describe("Heartbeat Management", () => {
 		it("starts heartbeat immediately after claim", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
+			const agent = createAgent(createDefaultAgentConfig(tempDir, {
 				agentId: "agent-hb",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
 				heartbeatIntervalMs: 5000, // 5 second interval
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			}));
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-hb",
@@ -339,16 +243,7 @@ describe("Agent Integration", () => {
 				scheduledEndAt: Date.now() + 20000,
 			};
 
-			global.fetch = vi.fn().mockImplementation((url: string) => {
-				if (url.includes("/claim")) {
-					return Promise.resolve({
-						status: 200,
-						ok: true,
-						json: () => Promise.resolve(claimResponse),
-					});
-				}
-				return Promise.resolve({ status: 204, ok: true });
-			});
+			const fetchMock = mockFetchWithClaim(claimResponse);
 
 			const iterationPromise = agent.runOneIteration();
 
@@ -356,8 +251,8 @@ describe("Agent Integration", () => {
 			await vi.advanceTimersByTimeAsync(6000);
 
 			// Should have called heartbeat
-			const fetchCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls;
-			expect(fetchCalls.some((call: string[]) => call[0].includes("/heartbeat"))).toBe(true);
+			const fetchCalls = fetchMock.mock.calls as [string, ...unknown[]][];
+			expect(fetchCalls.some((call) => call[0].includes("/heartbeat"))).toBe(true);
 
 			// Complete the iteration
 			await vi.advanceTimersByTimeAsync(14000);
@@ -366,16 +261,10 @@ describe("Agent Integration", () => {
 
 		it("stops heartbeat before reporting completion", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
+			const agent = createAgent(createDefaultAgentConfig(tempDir, {
 				agentId: "agent-hbstop",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
 				heartbeatIntervalMs: 2000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			}));
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-hbstop",
@@ -429,28 +318,18 @@ describe("Agent Integration", () => {
 			const journalPath = path.join(tempDir, "agent-409.json");
 			// Use RESULT_SAVED stage so no waiting is needed - we're testing the 409 handling,
 			// not the delay execution itself
-			const journal: AgentJournal = {
+			const journal = createTestJournal({
 				commandId: "cmd-409",
 				leaseId: "lease-409",
 				type: "DELAY",
 				startedAt: Date.now() - 2000,
 				scheduledEndAt: Date.now() - 1000, // Already past
-				httpSnapshot: null,
 				stage: "RESULT_SAVED",
-			};
+			});
 			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-409",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-409" }));
 
 			global.fetch = vi.fn().mockImplementation((url: string) => {
 				if (url.includes("/complete")) {
@@ -470,16 +349,7 @@ describe("Agent Integration", () => {
 
 		it("does not retry completion after 409", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-noretry",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-noretry" }));
 
 			let completeCallCount = 0;
 			global.fetch = vi.fn().mockImplementation((url: string) => {
@@ -518,16 +388,7 @@ describe("Agent Integration", () => {
 	describe("Command Routing", () => {
 		it("routes DELAY commands to delay executor", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-route-delay",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-route-delay" }));
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-route-delay",
@@ -560,8 +421,8 @@ describe("Agent Integration", () => {
 			await iterationPromise;
 
 			// Check that result has DELAY structure
-			expect(completeBody).toBeDefined();
-			expect(completeBody?.result).toEqual(
+			expect(completeBody).not.toBeNull();
+			expect(completeBody!.result).toEqual(
 				expect.objectContaining({
 					ok: true,
 					tookMs: expect.any(Number),
@@ -571,16 +432,7 @@ describe("Agent Integration", () => {
 
 		it("routes HTTP_GET_JSON commands to http executor", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-route-http",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-route-http" }));
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-route-http",
@@ -618,8 +470,8 @@ describe("Agent Integration", () => {
 			await agent.runOneIteration();
 
 			// Check that result has HTTP_GET_JSON structure
-			expect(completeBody).toBeDefined();
-			expect(completeBody?.result).toEqual(
+			expect(completeBody).not.toBeNull();
+			expect(completeBody!.result).toEqual(
 				expect.objectContaining({
 					status: expect.any(Number),
 					body: expect.anything(),
@@ -631,16 +483,7 @@ describe("Agent Integration", () => {
 
 		it("handles unknown command type gracefully without crashing", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-unknown",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-unknown" }));
 
 			const claimResponse = {
 				commandId: "cmd-unknown",
@@ -672,16 +515,7 @@ describe("Agent Integration", () => {
 	describe("Server Unavailability Handling", () => {
 		it("handles network errors gracefully during claim", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-netfail",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-netfail" }));
 
 			global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
 
@@ -691,16 +525,7 @@ describe("Agent Integration", () => {
 
 		it("continues polling after server errors", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-retry",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-retry" }));
 
 			let callCount = 0;
 			global.fetch = vi.fn().mockImplementation(() => {
@@ -722,16 +547,7 @@ describe("Agent Integration", () => {
 
 		it("handles server 500 errors gracefully", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
-				agentId: "agent-500",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
-				heartbeatIntervalMs: 10000,
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-500" }));
 
 			global.fetch = vi.fn().mockResolvedValue({
 				status: 500,
@@ -747,16 +563,10 @@ describe("Agent Integration", () => {
 	describe("Lease Validity During Execution", () => {
 		it("stops execution when heartbeat fails (lease expired)", async () => {
 			const { createAgent } = await import("../index.js");
-			const agent = createAgent({
+			const agent = createAgent(createDefaultAgentConfig(tempDir, {
 				agentId: "agent-expiry",
-				serverUrl: "http://test:3000",
-				stateDir: tempDir,
-				maxLeaseMs: 30000,
 				heartbeatIntervalMs: 2000, // 2 second heartbeat
-				pollIntervalMs: 1000,
-				killAfterSeconds: null,
-				randomFailures: false,
-			});
+			}));
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-expiry",

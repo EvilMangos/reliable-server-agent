@@ -11,37 +11,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentJournal, DelayPayload } from "@reliable-server-agent/shared";
-import type { JournalManager } from "../journal.js";
+import type { DelayPayload } from "@reliable-server-agent/shared";
+import { createMockJournalManager, createTestJournal } from "./test-utils.js";
 
-// Mock JournalManager for testing
-function createMockJournalManager(journal: AgentJournal): JournalManager {
-	return {
-		getJournalPath: vi.fn(() => "/mock/path/agent.json"),
-		load: vi.fn(() => journal),
-		save: vi.fn(),
-		delete: vi.fn(),
-		createClaimed: vi.fn(() => journal),
-		updateStage: vi.fn((j: AgentJournal, stage: string) => {
-			j.stage = stage as AgentJournal["stage"];
-		}),
-		updateHttpSnapshot: vi.fn(),
-	};
-}
-
-// Create a basic journal for DELAY commands
-function createDelayJournal(overrides: Partial<AgentJournal> = {}): AgentJournal {
-	return {
-		commandId: "cmd-123",
-		leaseId: "lease-456",
-		type: "DELAY",
-		startedAt: Date.now(),
-		scheduledEndAt: Date.now() + 5000,
-		httpSnapshot: null,
-		stage: "CLAIMED",
-		...overrides,
-	};
-}
+// Alias for clarity in delay tests - creates a DELAY-type journal
+const createDelayJournal = createTestJournal;
 
 describe("DELAY Executor", () => {
 	beforeEach(() => {

@@ -6,6 +6,18 @@ export default defineConfig({
 		environment: "node",
 		include: ["packages/**/*.test.ts", "packages/**/*.spec.ts"],
 		exclude: ["**/node_modules/**", "**/dist/**"],
+		pool: "forks",
+		poolOptions: {
+			forks: {
+				singleFork: true, // Run all tests in a single fork to share process
+			},
+		},
+		// Run tests sequentially to avoid port conflicts and signal handler interference
+		sequence: {
+			concurrent: false,
+		},
+		// Disable file parallelism - run test files sequentially
+		// fileParallelism: false,
 		coverage: {
 			provider: "v8",
 			reporter: ["text", "json", "html"],
