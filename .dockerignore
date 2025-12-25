@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build artifacts
+dist/
+*.tsbuildinfo
+
+# Git
+.git/
+.gitignore
+
+# IDE and editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test files and coverage
+**/__tests__/
+**/*.test.ts
+**/*.spec.ts
+coverage/
+.nyc_output/
+
+# Runtime data (should use named volumes)
+data/
+.agent-state/
+
+# Documentation and config files not needed in build
+*.md
+!README.md
+LICENSE
+.prettierrc*
+.eslintrc*
+eslint.config.*
+
+# Husky (git hooks)
+.husky/
+
+# Environment files (never include secrets in images)
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db

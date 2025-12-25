@@ -41,6 +41,11 @@ export async function startServer(): Promise<ServerInstance> {
 	const app = express();
 	app.use(express.json());
 
+	// Health check endpoint
+	app.get("/health", (_req, res) => {
+		res.status(200).json({ status: "ok" });
+	});
+
 	// Mount command routes
 	const commandRoutes = createCommandRoutes(db);
 	app.use("/commands", commandRoutes);
@@ -69,3 +74,9 @@ export async function startServer(): Promise<ServerInstance> {
 
 	return { app, server, db };
 }
+
+// Start server when run directly
+startServer().catch((err) => {
+	console.error("Failed to start server:", err);
+	process.exit(1);
+});
