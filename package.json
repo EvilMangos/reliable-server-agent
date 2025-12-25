@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  },
   "description": "Fault-tolerant single-agent command execution system",
   "scripts": {
     "build": "pnpm -r build",
@@ -13,6 +18,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "pnpm --filter @reliable-server-agent/e2e test",
     "clean": "pnpm -r clean",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
