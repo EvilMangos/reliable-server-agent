@@ -2,6 +2,8 @@ import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } fr
 import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
+import { startServer } from "../index.js";
+import { CommandDatabase } from "../store/database.js";
 
 /**
  * Tests for server entry point (index.ts)
@@ -17,6 +19,23 @@ import * as http from "http";
  * - Error handling for database and port failures
  * - No periodic lease checking
  */
+
+/**
+ * HTTP agent that doesn't reuse connections
+ * This prevents keep-alive connections from causing issues between tests
+ */
+const noKeepAliveAgent = new http.Agent({ keepAlive: false });
+
+/**
+ * Helper to close a server and wait for it to fully close
+ */
+async function closeServer(server: http.Server): Promise<void> {
+	return new Promise((resolve) => {
+		// Close all active connections first (Node 18.2+)
+		server.closeAllConnections();
+		server.close(() => resolve());
+	});
+}
 
 /**
  * Helper to make HTTP requests to a server
@@ -40,8 +59,10 @@ async function httpRequest(
 				port: address.port,
 				path,
 				method,
+				agent: noKeepAliveAgent,
 				headers: {
 					"Content-Type": "application/json",
+					Connection: "close",
 					...(data ? { "Content-Length": Buffer.byteLength(data) } : {}),
 				},
 			},
@@ -70,24 +91,24 @@ async function httpRequest(
 }
 
 describe("server entry point (index.ts)", () => {
-	const originalEnv = process.env;
+	// Make a deep copy of the original environment
+	const originalEnv = { ...process.env };
 	let consoleLogSpy: MockInstance;
 	let _consoleErrorSpy: MockInstance;
 	let _processExitSpy: MockInstance;
 	let tempDir: string;
 
 	beforeEach(() => {
-		// Reset module cache to get fresh imports
-		vi.resetModules();
-
-		// Reset env vars
+		// Reset env vars to original state (don't use vi.resetModules() - breaks native modules)
 		process.env = { ...originalEnv };
 		delete process.env.PORT;
 		delete process.env.DATABASE_PATH;
 
 		// Spy on console
-		consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		_consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {
+		});
+		_consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {
+		});
 		_processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
 
 		// Create temp directory for test database
@@ -98,6 +119,11 @@ describe("server entry point (index.ts)", () => {
 		process.env = originalEnv;
 		vi.restoreAllMocks();
 
+		// Remove signal handlers that were added by startServer
+		// This prevents signal handler accumulation across tests
+		process.removeAllListeners("SIGINT");
+		process.removeAllListeners("SIGTERM");
+
 		// Clean up temp directory
 		if (tempDir && fs.existsSync(tempDir)) {
 			fs.rmSync(tempDir, { recursive: true, force: true });
@@ -106,10 +132,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("Express app configuration", () => {
 		it("creates Express app with JSON body parsing middleware", async () => {
-			// Import the module to get startServer function
-			// This will fail initially since implementation doesn't exist
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "test.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0"; // Use ephemeral port
@@ -127,7 +149,7 @@ describe("server entry point (index.ts)", () => {
 				expect(response.status).toBe(201);
 				expect(response.body).toHaveProperty("commandId");
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
@@ -135,8 +157,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("SQLite database initialization", () => {
 		it("initializes SQLite database with WAL mode at DATABASE_PATH", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "custom.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -157,14 +177,12 @@ describe("server entry point (index.ts)", () => {
 				// WAL mode should create a .db-wal file
 				expect(fs.existsSync(`${dbPath}-wal`)).toBe(true);
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
 
 		it("uses default database path ./data/commands.db when DATABASE_PATH not set", async () => {
-			const { startServer } = await import("../index.js");
-
 			// Ensure DATABASE_PATH is not set
 			delete process.env.DATABASE_PATH;
 			process.env.PORT = "0";
@@ -182,7 +200,7 @@ describe("server entry point (index.ts)", () => {
 				const defaultDbPath = path.join(process.cwd(), "data", "commands.db");
 				expect(fs.existsSync(defaultDbPath)).toBe(true);
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 				// Clean up default database
 				const defaultDbPath = path.join(process.cwd(), "data", "commands.db");
@@ -204,8 +222,6 @@ describe("server entry point (index.ts)", () => {
 		});
 
 		it("creates database directory if it does not exist", async () => {
-			const { startServer } = await import("../index.js");
-
 			const nestedDir = path.join(tempDir, "nested", "deep", "path");
 			const dbPath = path.join(nestedDir, "test.db");
 			process.env.DATABASE_PATH = dbPath;
@@ -221,7 +237,7 @@ describe("server entry point (index.ts)", () => {
 				expect(fs.existsSync(nestedDir)).toBe(true);
 				expect(fs.existsSync(dbPath)).toBe(true);
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
@@ -229,9 +245,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("startup recovery", () => {
 		it("resets expired leases to PENDING on startup", async () => {
-			const { CommandDatabase } = await import("../store/database.js");
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "recovery.db");
 
 			// Pre-populate database with expired RUNNING command
@@ -263,15 +276,12 @@ describe("server entry point (index.ts)", () => {
 				expect(command!.leaseId).toBeNull();
 				expect(command!.leaseExpiresAt).toBeNull();
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
 
 		it("logs recovery operation results", async () => {
-			const { CommandDatabase } = await import("../store/database.js");
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "recovery-log.db");
 
 			// Pre-populate with expired command
@@ -291,18 +301,16 @@ describe("server entry point (index.ts)", () => {
 				const hasRecoveryLog = logCalls.some(
 					(log) =>
 						/recovery|reset.*expired|recovered.*lease/i.test(log) ||
-						/1.*lease.*reset|reset.*1/i.test(log),
+                        /1.*lease.*reset|reset.*1/i.test(log),
 				);
 				expect(hasRecoveryLog).toBe(true);
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
 
 		it("keeps non-expired RUNNING commands unchanged", async () => {
-			const { CommandDatabase } = await import("../store/database.js");
-			const { startServer } = await import("../index.js");
 
 			const dbPath = path.join(tempDir, "no-recovery.db");
 
@@ -331,7 +339,7 @@ describe("server entry point (index.ts)", () => {
 				expect(command!.agentId).toBe("agent-active");
 				expect(command!.leaseId).toBe("lease-active");
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
@@ -339,8 +347,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("command routes", () => {
 		it("mounts command routes at /commands path", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "routes.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -371,13 +377,12 @@ describe("server entry point (index.ts)", () => {
 				expect(claimRes.status).toBe(200);
 				expect((claimRes.body as { commandId: string }).commandId).toBe(commandId);
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
 
 		it("returns 404 for requests not matching /commands routes", async () => {
-			const { startServer } = await import("../index.js");
 
 			const dbPath = path.join(tempDir, "404.db");
 			process.env.DATABASE_PATH = dbPath;
@@ -389,7 +394,7 @@ describe("server entry point (index.ts)", () => {
 				const res = await httpRequest(server, "GET", "/nonexistent");
 				expect(res.status).toBe(404);
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
@@ -397,8 +402,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("port configuration", () => {
 		it("listens on configurable PORT from environment variable", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "port.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "4567";
@@ -410,33 +413,40 @@ describe("server entry point (index.ts)", () => {
 				expect(address).not.toBeNull();
 				expect((address as { port: number }).port).toBe(4567);
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
 
 		it("uses default port 3000 when PORT is not set", async () => {
-			const { startServer } = await import("../index.js");
-
+			// Test that the default port logic is 3000 by checking if it tries to bind to port 3000
+			// We can't actually test binding if port 3000 is in use (e.g., by Docker)
 			const dbPath = path.join(tempDir, "default-port.db");
 			process.env.DATABASE_PATH = dbPath;
 			delete process.env.PORT;
 
-			const { server, db } = await startServer();
-
 			try {
-				const address = server.address();
-				expect(address).not.toBeNull();
-				expect((address as { port: number }).port).toBe(3000);
-			} finally {
-				server.close();
-				db.close();
+				const { server, db } = await startServer();
+				// If we get here, port 3000 was available
+				try {
+					const address = server.address();
+					expect(address).not.toBeNull();
+					expect((address as { port: number }).port).toBe(3000);
+				} finally {
+					await closeServer(server);
+					db.close();
+				}
+			} catch (err: unknown) {
+				// If port 3000 is in use, verify the error is EADDRINUSE (which proves default is 3000)
+				if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
+					expect((err as NodeJS.ErrnoException).message).toContain("3000");
+				} else {
+					throw err;
+				}
 			}
 		});
 
 		it("logs startup success message with port", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "startup-log.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "5555";
@@ -450,7 +460,7 @@ describe("server entry point (index.ts)", () => {
 				);
 				expect(hasStartupLog).toBe(true);
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
@@ -458,7 +468,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("graceful shutdown", () => {
 		it("handles SIGINT for graceful shutdown", async () => {
-			const { startServer } = await import("../index.js");
 
 			const dbPath = path.join(tempDir, "sigint.db");
 			process.env.DATABASE_PATH = dbPath;
@@ -487,8 +496,6 @@ describe("server entry point (index.ts)", () => {
 		});
 
 		it("handles SIGTERM for graceful shutdown", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "sigterm.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -516,8 +523,6 @@ describe("server entry point (index.ts)", () => {
 		});
 
 		it("closes database connection on shutdown", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "db-close.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -549,8 +554,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("error handling", () => {
 		it("exits with code 1 on database initialization failure", async () => {
-			const { startServer } = await import("../index.js");
-
 			// Use an invalid path that cannot be created (e.g., in /dev/null directory)
 			const invalidPath = "/dev/null/invalid/path/db.sqlite";
 			process.env.DATABASE_PATH = invalidPath;
@@ -563,8 +566,6 @@ describe("server entry point (index.ts)", () => {
 		});
 
 		it("exits with code 1 on port binding failure", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "port-conflict.db");
 			process.env.DATABASE_PATH = dbPath;
 
@@ -589,8 +590,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("no periodic lease checking", () => {
 		it("does NOT set up periodic lease expiry checking", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "no-periodic.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -608,14 +607,14 @@ describe("server entry point (index.ts)", () => {
 					const callbackStr = callback.toString();
 					return (
 						callbackStr.includes("lease") ||
-						callbackStr.includes("expired") ||
-						callbackStr.includes("resetExpiredLeases")
+                        callbackStr.includes("expired") ||
+                        callbackStr.includes("resetExpiredLeases")
 					);
 				});
 
 				expect(leaseCheckingCalls.length).toBe(0);
 			} finally {
-				server.close();
+				await closeServer(server);
 				db.close();
 			}
 		});
@@ -623,8 +622,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("startServer function contract", () => {
 		it("returns an object with app, server, and db properties", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "contract.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -642,7 +639,7 @@ describe("server entry point (index.ts)", () => {
 				expect(result.db).toHaveProperty("getCommand"); // Has database methods
 				expect(result.db).toHaveProperty("close");
 			} finally {
-				result.server.close();
+				await closeServer(result.server);
 				result.db.close();
 			}
 		});
