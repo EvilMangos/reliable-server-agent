@@ -1,67 +1,65 @@
 import type { AgentJournal, CommandType, HttpGetJsonResult, JournalStage } from "@reliable-server-agent/shared";
+import type { JournalManager } from "./types";
+import type { Logger } from "./types";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { createLogger } from "./logger.js";
+import { LoggerImpl } from "./logger";
+import { formatError } from "./utils";
 
-const logger = createLogger("journal");
+/**
+ * Journal manager implementation for persisting agent state.
+ * Uses atomic writes (temp file + rename) to ensure data integrity.
+ */
+export class JournalManagerImpl implements JournalManager {
+	private readonly journalPath: string;
+	private readonly logger: Logger;
 
-export interface JournalManager {
-	getJournalPath(): string;
-	load(): AgentJournal | null;
-	save(journal: AgentJournal): void;
-	delete(): void;
-	createClaimed(
-		commandId: string,
-		leaseId: string,
-		type: CommandType,
-		startedAt: number,
-		scheduledEndAt: number | null
-	): AgentJournal;
-	updateStage(journal: AgentJournal, stage: JournalStage): void;
-	updateHttpSnapshot(journal: AgentJournal, snapshot: HttpGetJsonResult): void;
-}
+	constructor(
+		private readonly stateDir: string,
+		agentId: string,
+	) {
+		this.journalPath = path.join(stateDir, `${agentId}.json`);
+		this.logger = new LoggerImpl("journal");
+	}
 
-export function createJournalManager(stateDir: string, agentId: string): JournalManager {
-	const journalPath = path.join(stateDir, `${agentId}.json`);
-
-	function ensureDir(): void {
-		if (!fs.existsSync(stateDir)) {
-			fs.mkdirSync(stateDir, { recursive: true });
-			logger.info(`Created state directory: ${stateDir}`);
+	private ensureDir(): void {
+		if (!fs.existsSync(this.stateDir)) {
+			fs.mkdirSync(this.stateDir, { recursive: true });
+			this.logger.info(`Created state directory: ${this.stateDir}`);
 		}
 	}
 
-	function getJournalPath(): string {
-		return journalPath;
+	getJournalPath(): string {
+		return this.journalPath;
 	}
 
-	function load(): AgentJournal | null {
+	load(): AgentJournal | null {
 		try {
-			if (!fs.existsSync(journalPath)) {
+			if (!fs.existsSync(this.journalPath)) {
 				return null;
 			}
-			const content = fs.readFileSync(journalPath, "utf-8");
+			const content = fs.readFileSync(this.journalPath, "utf-8");
 			const journal = JSON.parse(content) as AgentJournal;
-			logger.info(`Loaded journal for command ${journal.commandId} (stage=${journal.stage})`);
+			this.logger.info(`Loaded journal for command ${journal.commandId} (stage=${journal.stage})`);
 			return journal;
 		} catch (err) {
-			logger.error(`Failed to load journal: ${err instanceof Error ? err.message : String(err)}`);
+			this.logger.error(`Failed to load journal: ${formatError(err)}`);
 			return null;
 		}
 	}
 
-	function save(journal: AgentJournal): void {
-		ensureDir();
+	save(journal: AgentJournal): void {
+		this.ensureDir();
 
 		// Atomic write: write to temp file, then rename
-		const tempPath = `${journalPath}.${randomUUID()}.tmp`;
+		const tempPath = `${this.journalPath}.${randomUUID()}.tmp`;
 		const content = JSON.stringify(journal, null, 2);
 
 		try {
 			fs.writeFileSync(tempPath, content, "utf-8");
-			fs.renameSync(tempPath, journalPath);
-			logger.debug(`Saved journal for command ${journal.commandId} (stage=${journal.stage})`);
+			fs.renameSync(tempPath, this.journalPath);
+			this.logger.debug(`Saved journal for command ${journal.commandId} (stage=${journal.stage})`);
 		} catch (err) {
 			// Clean up temp file if it exists
 			try {
@@ -75,18 +73,18 @@ export function createJournalManager(stateDir: string, agentId: string): Journal
 		}
 	}
 
-	function deleteJournal(): void {
+	delete(): void {
 		try {
-			if (fs.existsSync(journalPath)) {
-				fs.unlinkSync(journalPath);
-				logger.info("Deleted journal");
+			if (fs.existsSync(this.journalPath)) {
+				fs.unlinkSync(this.journalPath);
+				this.logger.info("Deleted journal");
 			}
 		} catch (err) {
-			logger.error(`Failed to delete journal: ${err instanceof Error ? err.message : String(err)}`);
+			this.logger.error(`Failed to delete journal: ${formatError(err)}`);
 		}
 	}
 
-	function createClaimed(
+	createClaimed(
 		commandId: string,
 		leaseId: string,
 		type: CommandType,
@@ -102,28 +100,26 @@ export function createJournalManager(stateDir: string, agentId: string): Journal
 			httpSnapshot: null,
 			stage: "CLAIMED",
 		};
-		save(journal);
+		this.save(journal);
 		return journal;
 	}
 
-	function updateStage(journal: AgentJournal, stage: JournalStage): void {
+	updateStage(journal: AgentJournal, stage: JournalStage): void {
 		journal.stage = stage;
-		save(journal);
+		this.save(journal);
 	}
 
-	function updateHttpSnapshot(journal: AgentJournal, snapshot: HttpGetJsonResult): void {
+	updateHttpSnapshot(journal: AgentJournal, snapshot: HttpGetJsonResult): void {
 		journal.httpSnapshot = snapshot;
 		journal.stage = "RESULT_SAVED";
-		save(journal);
+		this.save(journal);
 	}
+}
 
-	return {
-		getJournalPath,
-		load,
-		save,
-		delete: deleteJournal,
-		createClaimed,
-		updateStage,
-		updateHttpSnapshot,
-	};
+/**
+ * Factory function for creating journal managers.
+ * @deprecated Use `new JournalManagerImpl(stateDir, agentId)` instead.
+ */
+export function createJournalManager(stateDir: string, agentId: string): JournalManager {
+	return new JournalManagerImpl(stateDir, agentId);
 }

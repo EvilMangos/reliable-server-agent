@@ -1,20 +1,10 @@
-import type { AgentJournal, HttpGetJsonPayload, HttpGetJsonResult } from "@reliable-server-agent/shared";
+import type { HttpGetJsonPayload, HttpGetJsonResult } from "@reliable-server-agent/shared";
 import { HTTP_BODY_MAX_CHARS, HTTP_REQUEST_TIMEOUT_MS } from "@reliable-server-agent/shared";
-import type { JournalManager } from "../journal.js";
-import { createLogger } from "../logger.js";
+import type { HttpGetJsonExecutionContext } from "../types/executor-context.js";
+import { LoggerImpl } from "../logger/index.js";
+import { RANDOM_FAILURE_PROBABILITY } from "../constants.js";
 
-const logger = createLogger("http-get-json-executor");
-
-/**
- * Probability threshold for triggering random failures (10%).
- */
-const RANDOM_FAILURE_PROBABILITY = 0.1;
-
-export interface HttpGetJsonExecutionContext {
-	journal: AgentJournal;
-	journalManager: JournalManager;
-	onRandomFailure?: () => void;
-}
+const logger = new LoggerImpl("http-get-json-executor");
 
 /**
  * Execute HTTP_GET_JSON command with idempotent behavior.

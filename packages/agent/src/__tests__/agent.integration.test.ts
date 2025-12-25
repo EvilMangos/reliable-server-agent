@@ -19,19 +19,32 @@ import type {
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createDefaultAgentConfig, createTestJournal, mockFetchNoWork, mockFetchWithClaim } from "./test-utils.js";
+import {
+	createDefaultAgentConfig,
+	createTestJournal,
+	mockFetchNoWork,
+	mockFetchWith409OnComplete,
+	mockFetchWithCallTracking,
+	mockFetchWithClaim,
+	mockFetchWithNetworkError,
+	mockFetchWithServerError,
+} from "./test-utils";
+import { AgentImpl } from "../index.js";
 
 describe("Agent Integration", () => {
 	let tempDir: string;
+	let originalFetch: typeof global.fetch;
 
 	beforeEach(() => {
 		vi.useFakeTimers();
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-test-"));
+		originalFetch = global.fetch;
 	});
 
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		global.fetch = originalFetch;
 		// Clean up temp directory
 		try {
 			fs.rmSync(tempDir, { recursive: true, force: true });
@@ -79,9 +92,8 @@ describe("Agent Integration", () => {
 				return Promise.resolve({ status: 204, ok: true });
 			});
 
-			// Import and create agent
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-123" }));
+			// Create agent
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-123" }));
 
 			// Run one iteration of recovery
 			await agent.recoverFromJournal();
@@ -105,8 +117,7 @@ describe("Agent Integration", () => {
 			});
 			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-456" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-456" }));
 
 			mockFetchNoWork();
 
@@ -135,14 +146,9 @@ describe("Agent Integration", () => {
 			});
 			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-789" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-789" }));
 
-			// Mock fetch to return 409
-			global.fetch = vi.fn().mockResolvedValue({
-				status: 409,
-				ok: false,
-			});
+			mockFetchWith409OnComplete();
 
 			await agent.recoverFromJournal();
 
@@ -163,8 +169,7 @@ describe("Agent Integration", () => {
 			});
 			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-delay" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-delay" }));
 
 			const fetchMock = mockFetchNoWork();
 
@@ -185,8 +190,7 @@ describe("Agent Integration", () => {
 
 	describe("Claim-Execute-Report Cycle", () => {
 		it("claims command, executes, and reports completion", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-cycle" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-cycle" }));
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-exec",
@@ -211,8 +215,7 @@ describe("Agent Integration", () => {
 		});
 
 		it("returns to poll loop when claim returns 204 (no work)", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-nowork" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-nowork" }));
 
 			const fetchMock = mockFetchNoWork();
 
@@ -227,8 +230,7 @@ describe("Agent Integration", () => {
 
 	describe("Heartbeat Management", () => {
 		it("starts heartbeat immediately after claim", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, {
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, {
 				agentId: "agent-hb",
 				heartbeatIntervalMs: 5000, // 5 second interval
 			}));
@@ -260,8 +262,7 @@ describe("Agent Integration", () => {
 		});
 
 		it("stops heartbeat before reporting completion", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, {
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, {
 				agentId: "agent-hbstop",
 				heartbeatIntervalMs: 2000,
 			}));
@@ -276,33 +277,14 @@ describe("Agent Integration", () => {
 				scheduledEndAt: Date.now() + 3000,
 			};
 
-			const heartbeatCalls: number[] = [];
-			const completeCalls: number[] = [];
-			let callOrder = 0;
-
-			global.fetch = vi.fn().mockImplementation((url: string) => {
-				callOrder++;
-				if (url.includes("/claim")) {
-					return Promise.resolve({
-						status: 200,
-						ok: true,
-						json: () => Promise.resolve(claimResponse),
-					});
-				}
-				if (url.includes("/heartbeat")) {
-					heartbeatCalls.push(callOrder);
-					return Promise.resolve({ status: 204, ok: true });
-				}
-				if (url.includes("/complete")) {
-					completeCalls.push(callOrder);
-					return Promise.resolve({ status: 204, ok: true });
-				}
-				return Promise.resolve({ status: 204, ok: true });
-			});
+			const { getHeartbeatCalls, getCompleteCalls } = mockFetchWithCallTracking(claimResponse);
 
 			const iterationPromise = agent.runOneIteration();
 			await vi.advanceTimersByTimeAsync(3000);
 			await iterationPromise;
+
+			const heartbeatCalls = getHeartbeatCalls();
+			const completeCalls = getCompleteCalls();
 
 			// Complete should be called, and no heartbeats after complete
 			expect(completeCalls.length).toBe(1);
@@ -328,18 +310,9 @@ describe("Agent Integration", () => {
 			});
 			fs.writeFileSync(journalPath, JSON.stringify(journal));
 
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-409" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-409" }));
 
-			global.fetch = vi.fn().mockImplementation((url: string) => {
-				if (url.includes("/complete")) {
-					return Promise.resolve({ status: 409, ok: false });
-				}
-				if (url.includes("/heartbeat")) {
-					return Promise.resolve({ status: 204, ok: true });
-				}
-				return Promise.resolve({ status: 204, ok: true });
-			});
+			mockFetchWith409OnComplete();
 
 			await agent.recoverFromJournal();
 
@@ -348,8 +321,7 @@ describe("Agent Integration", () => {
 		});
 
 		it("does not retry completion after 409", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-noretry" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-noretry" }));
 
 			let completeCallCount = 0;
 			global.fetch = vi.fn().mockImplementation((url: string) => {
@@ -387,8 +359,7 @@ describe("Agent Integration", () => {
 
 	describe("Command Routing", () => {
 		it("routes DELAY commands to delay executor", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-route-delay" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-route-delay" }));
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-route-delay",
@@ -431,8 +402,7 @@ describe("Agent Integration", () => {
 		});
 
 		it("routes HTTP_GET_JSON commands to http executor", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-route-http" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-route-http" }));
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-route-http",
@@ -482,8 +452,7 @@ describe("Agent Integration", () => {
 		});
 
 		it("handles unknown command type gracefully without crashing", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-unknown" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-unknown" }));
 
 			const claimResponse = {
 				commandId: "cmd-unknown",
@@ -514,18 +483,16 @@ describe("Agent Integration", () => {
 
 	describe("Server Unavailability Handling", () => {
 		it("handles network errors gracefully during claim", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-netfail" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-netfail" }));
 
-			global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
+			mockFetchWithNetworkError("Network error");
 
 			// Should not throw, should handle gracefully
 			await expect(agent.runOneIteration()).resolves.not.toThrow();
 		});
 
 		it("continues polling after server errors", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-retry" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-retry" }));
 
 			let callCount = 0;
 			global.fetch = vi.fn().mockImplementation(() => {
@@ -546,14 +513,9 @@ describe("Agent Integration", () => {
 		});
 
 		it("handles server 500 errors gracefully", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, { agentId: "agent-500" }));
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, { agentId: "agent-500" }));
 
-			global.fetch = vi.fn().mockResolvedValue({
-				status: 500,
-				ok: false,
-				statusText: "Internal Server Error",
-			});
+			mockFetchWithServerError(500, "Internal Server Error");
 
 			// Should not throw
 			await expect(agent.runOneIteration()).resolves.not.toThrow();
@@ -562,8 +524,7 @@ describe("Agent Integration", () => {
 
 	describe("Lease Validity During Execution", () => {
 		it("stops execution when heartbeat fails (lease expired)", async () => {
-			const { createAgent } = await import("../index.js");
-			const agent = createAgent(createDefaultAgentConfig(tempDir, {
+			const agent = new AgentImpl(createDefaultAgentConfig(tempDir, {
 				agentId: "agent-expiry",
 				heartbeatIntervalMs: 2000, // 2 second heartbeat
 			}));

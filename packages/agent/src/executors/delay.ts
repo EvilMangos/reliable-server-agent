@@ -1,25 +1,14 @@
-import type { AgentJournal, DelayPayload, DelayResult } from "@reliable-server-agent/shared";
-import type { JournalManager } from "../journal.js";
-import { createLogger } from "../logger.js";
+import type { DelayPayload, DelayResult } from "@reliable-server-agent/shared";
+import type { DelayExecutionContext } from "../types";
+import { LoggerImpl } from "../logger";
+import { RANDOM_FAILURE_PROBABILITY } from "../constants";
 
-const logger = createLogger("delay-executor");
+const logger = new LoggerImpl("delay-executor");
 
 /**
  * Interval between lease validity checks during delay waiting.
  */
 const LEASE_CHECK_INTERVAL_MS = 1000;
-
-/**
- * Probability threshold for triggering random failures (10%).
- */
-const RANDOM_FAILURE_PROBABILITY = 0.1;
-
-export interface DelayExecutionContext {
-	journal: AgentJournal;
-	journalManager: JournalManager;
-	checkLeaseValid: () => boolean;
-	onRandomFailure?: () => void;
-}
 
 /**
  * Error thrown when lease becomes invalid during delay execution.

@@ -4,13 +4,15 @@
  * Provides:
  * - Factory functions for creating test configs and journals
  * - Mock implementations for JournalManager
+ * - Executor context factories for delay and http tests
  * - Fetch mock helpers for simulating server responses
  */
 
 import { vi } from "vitest";
 import type { AgentJournal, ClaimCommandResponse } from "@reliable-server-agent/shared";
-import type { AgentConfig } from "../config.js";
-import type { JournalManager } from "../journal.js";
+import type { AgentConfig } from "../types";
+import type { JournalManager } from "../types";
+import type { DelayExecutionContext } from "../types";
 
 /**
  * Creates a default AgentConfig with sensible test defaults.
@@ -67,6 +69,39 @@ export function createMockJournalManager(journal: AgentJournal): JournalManager 
 			j.stage = stage as AgentJournal["stage"];
 		}),
 		updateHttpSnapshot: vi.fn(),
+	};
+}
+
+// =============================================================================
+// Executor Context Factories
+// =============================================================================
+
+/**
+ * Override options for delay executor context.
+ */
+export interface DelayExecutorContextOverrides {
+	checkLeaseValid?: () => boolean;
+	onRandomFailure?: () => void;
+}
+
+/**
+ * Creates a complete context for delay executor tests.
+ * Reduces boilerplate by combining journal + journalManager + checkLeaseValid.
+ *
+ * @param journal - The test journal (use createTestJournal to create one)
+ * @param overrides - Optional overrides for checkLeaseValid and onRandomFailure
+ * @returns A context object ready for executeDelay
+ */
+export function createDelayExecutorContext(
+	journal: AgentJournal,
+	overrides?: DelayExecutorContextOverrides,
+): DelayExecutionContext {
+	const journalManager = createMockJournalManager(journal);
+	return {
+		journal,
+		journalManager,
+		checkLeaseValid: overrides?.checkLeaseValid ?? (() => true),
+		...(overrides?.onRandomFailure && { onRandomFailure: overrides.onRandomFailure }),
 	};
 }
 
@@ -129,4 +164,141 @@ export function mockFetchWithClaim(
 	});
 	global.fetch = mockFn;
 	return mockFn;
+}
+
+/**
+ * Mocks global.fetch to return 409 (Conflict) for `/complete` endpoints.
+ * Useful for testing stale lease scenarios.
+ *
+ * @param claimResponse - Optional claim response for the claim endpoint
+ * @returns The mock function for assertions
+ */
+export function mockFetchWith409OnComplete(
+	claimResponse?: ClaimCommandResponse,
+): ReturnType<typeof vi.fn> {
+	const mockFn = vi.fn().mockImplementation((url: string) => {
+		if (url.includes("/claim") && claimResponse) {
+			return Promise.resolve({
+				status: 200,
+				ok: true,
+				json: () => Promise.resolve(claimResponse),
+			});
+		}
+		if (url.includes("/complete")) {
+			return Promise.resolve({ status: 409, ok: false });
+		}
+		if (url.includes("/heartbeat")) {
+			return Promise.resolve({ status: 204, ok: true });
+		}
+		return Promise.resolve({ status: 204, ok: true });
+	});
+	global.fetch = mockFn;
+	return mockFn;
+}
+
+/**
+ * Mocks global.fetch to return a specific HTTP error status for all calls.
+ * Useful for testing server error handling.
+ *
+ * @param status - The HTTP status code to return (e.g., 500, 503)
+ * @param statusText - Optional status text (e.g., "Internal Server Error")
+ * @returns The mock function for assertions
+ */
+export function mockFetchWithServerError(
+	status: number,
+	statusText = "Error",
+): ReturnType<typeof vi.fn> {
+	const mockFn = vi.fn().mockResolvedValue({
+		status,
+		ok: false,
+		statusText,
+	});
+	global.fetch = mockFn;
+	return mockFn;
+}
+
+/**
+ * Mocks global.fetch to reject with a network error.
+ * Useful for testing network failure handling.
+ *
+ * @param errorMessage - The error message for the rejection
+ * @returns The mock function for assertions
+ */
+export function mockFetchWithNetworkError(
+	errorMessage = "Network error",
+): ReturnType<typeof vi.fn> {
+	const mockFn = vi.fn().mockRejectedValue(new Error(errorMessage));
+	global.fetch = mockFn;
+	return mockFn;
+}
+
+/**
+ * Result type for call tracking mock
+ */
+export interface CallTrackingResult {
+	fetchMock: ReturnType<typeof vi.fn>;
+	getHeartbeatCalls: () => number[];
+	getCompleteCalls: () => number[];
+	getCallOrder: () => number;
+}
+
+/**
+ * Executes a function with Math.random mocked to return a specific value.
+ * Automatically restores the original Math.random after execution.
+ *
+ * @param value - The value that Math.random should return (0-1)
+ * @param fn - The async function to execute with mocked random
+ */
+export async function withMockedRandom(value: number, fn: () => Promise<void>): Promise<void> {
+	const originalRandom = Math.random;
+	Math.random = () => value;
+	try {
+		await fn();
+	} finally {
+		Math.random = originalRandom;
+	}
+}
+
+/**
+ * Mocks global.fetch with call order tracking.
+ * Tracks the order in which heartbeat and complete endpoints are called.
+ * Useful for verifying heartbeat stops before completion.
+ *
+ * @param claimResponse - The response to return when claim endpoint is called
+ * @returns Object with mock function and call tracking getters
+ */
+export function mockFetchWithCallTracking(
+	claimResponse: ClaimCommandResponse,
+): CallTrackingResult {
+	const heartbeatCalls: number[] = [];
+	const completeCalls: number[] = [];
+	let callOrder = 0;
+
+	const mockFn = vi.fn().mockImplementation((url: string) => {
+		callOrder++;
+		if (url.includes("/claim")) {
+			return Promise.resolve({
+				status: 200,
+				ok: true,
+				json: () => Promise.resolve(claimResponse),
+			});
+		}
+		if (url.includes("/heartbeat")) {
+			heartbeatCalls.push(callOrder);
+			return Promise.resolve({ status: 204, ok: true });
+		}
+		if (url.includes("/complete")) {
+			completeCalls.push(callOrder);
+			return Promise.resolve({ status: 204, ok: true });
+		}
+		return Promise.resolve({ status: 204, ok: true });
+	});
+	global.fetch = mockFn;
+
+	return {
+		fetchMock: mockFn,
+		getHeartbeatCalls: () => heartbeatCalls,
+		getCompleteCalls: () => completeCalls,
+		getCallOrder: () => callOrder,
+	};
 }

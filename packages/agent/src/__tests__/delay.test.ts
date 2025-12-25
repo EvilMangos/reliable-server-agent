@@ -12,7 +12,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DelayPayload } from "@reliable-server-agent/shared";
-import { createMockJournalManager, createTestJournal } from "./test-utils.js";
+import { createDelayExecutorContext, createTestJournal, withMockedRandom } from "./test-utils";
+import { executeDelay } from "../executors/delay.js";
 
 // Alias for clarity in delay tests - creates a DELAY-type journal
 const createDelayJournal = createTestJournal;
@@ -29,22 +30,14 @@ describe("DELAY Executor", () => {
 	describe("executeDelay", () => {
 		describe("normal execution", () => {
 			it("waits until scheduledEndAt, not full ms duration", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: now + 5000,
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: 5000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const resultPromise = executeDelay(payload, context);
 
 				// Should not resolve immediately
@@ -60,22 +53,14 @@ describe("DELAY Executor", () => {
 			});
 
 			it("returns correct result structure with ok and tookMs", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: now + 1000,
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: 1000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const resultPromise = executeDelay(payload, context);
 				await vi.advanceTimersByTimeAsync(1000);
 				const result = await resultPromise;
@@ -87,22 +72,14 @@ describe("DELAY Executor", () => {
 			});
 
 			it("calculates tookMs as now minus startedAt", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const startedAt = Date.now();
 				const journal = createDelayJournal({
 					startedAt,
 					scheduledEndAt: startedAt + 3000,
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: 3000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const resultPromise = executeDelay(payload, context);
 				await vi.advanceTimersByTimeAsync(3000);
 				const result = await resultPromise;
@@ -113,8 +90,6 @@ describe("DELAY Executor", () => {
 
 		describe("recovery behavior", () => {
 			it("resumes with remaining time only when scheduledEndAt is in the future", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const startedAt = now - 3000; // Started 3 seconds ago
 				const scheduledEndAt = now + 2000; // Should end in 2 more seconds
@@ -124,15 +99,9 @@ describe("DELAY Executor", () => {
 					scheduledEndAt,
 					stage: "IN_PROGRESS", // Resuming after crash
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: 5000 }; // Original was 5 seconds
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const resultPromise = executeDelay(payload, context);
 
 				// Should wait only 2 more seconds (not full 5)
@@ -144,8 +113,6 @@ describe("DELAY Executor", () => {
 			});
 
 			it("completes immediately if scheduledEndAt is in the past", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const startedAt = now - 6000; // Started 6 seconds ago
 				const scheduledEndAt = now - 1000; // Already past
@@ -155,15 +122,9 @@ describe("DELAY Executor", () => {
 					scheduledEndAt,
 					stage: "IN_PROGRESS",
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: 5000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const resultPromise = executeDelay(payload, context);
 
 				// Should complete without any timer advancement
@@ -177,23 +138,18 @@ describe("DELAY Executor", () => {
 
 		describe("lease expiry handling", () => {
 			it("is cancellable when lease becomes invalid", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: now + 10000,
 				});
-				const journalManager = createMockJournalManager(journal);
 
 				let leaseValid = true;
-				const payload: DelayPayload = { ms: 10000 };
-				const context = {
-					journal,
-					journalManager,
+				const context = createDelayExecutorContext(journal, {
 					checkLeaseValid: () => leaseValid,
-				};
+				});
 
+				const payload: DelayPayload = { ms: 10000 };
 				const resultPromise = executeDelay(payload, context);
 
 				// Set up rejection expectation BEFORE advancing timers to avoid unhandled rejection
@@ -213,23 +169,16 @@ describe("DELAY Executor", () => {
 			});
 
 			it("checks lease validity periodically during wait", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: now + 30000, // Long delay
 				});
-				const journalManager = createMockJournalManager(journal);
 
 				const checkLeaseValid = vi.fn(() => true);
-				const payload: DelayPayload = { ms: 30000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid,
-				};
+				const context = createDelayExecutorContext(journal, { checkLeaseValid });
 
+				const payload: DelayPayload = { ms: 30000 };
 				const resultPromise = executeDelay(payload, context);
 
 				// Advance 10 seconds
@@ -249,84 +198,57 @@ describe("DELAY Executor", () => {
 
 		describe("journal updates", () => {
 			it("updates journal stage to IN_PROGRESS before waiting", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: now + 1000,
 					stage: "CLAIMED",
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: 1000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const resultPromise = executeDelay(payload, context);
 
 				// Before advancing time, journal should be updated
-				expect(journalManager.updateStage).toHaveBeenCalledWith(journal, "IN_PROGRESS");
+				expect(context.journalManager.updateStage).toHaveBeenCalledWith(journal, "IN_PROGRESS");
 
 				await vi.advanceTimersByTimeAsync(1000);
 				await resultPromise;
 			});
 
 			it("does not update stage if already IN_PROGRESS (recovery case)", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now - 500,
 					scheduledEndAt: now + 500,
 					stage: "IN_PROGRESS", // Already in progress
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: 1000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const resultPromise = executeDelay(payload, context);
 				await vi.advanceTimersByTimeAsync(500);
 				await resultPromise;
 
 				// Should NOT call updateStage again if already IN_PROGRESS
-				expect(journalManager.updateStage).not.toHaveBeenCalled();
+				expect(context.journalManager.updateStage).not.toHaveBeenCalled();
 			});
 		});
 
 		describe("random failure injection", () => {
 			it("supports onRandomFailure callback injection", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: now + 2000,
 				});
-				const journalManager = createMockJournalManager(journal);
 
 				const onRandomFailure = vi.fn();
+				const context = createDelayExecutorContext(journal, { onRandomFailure });
+
 				const payload: DelayPayload = { ms: 2000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-					onRandomFailure,
-				};
 
-				// Mock Math.random to trigger failure
-				const originalRandom = Math.random;
-				Math.random = () => 0.05; // Low value to trigger failure (< 0.1)
-
-				try {
+				await withMockedRandom(0.05, async () => {
 					const resultPromise = executeDelay(payload, context);
 
 					// Set up rejection handler BEFORE advancing timers to avoid unhandled rejection
@@ -339,37 +261,24 @@ describe("DELAY Executor", () => {
 
 					// Random failure callback should have been called
 					expect(onRandomFailure).toHaveBeenCalled();
-				} finally {
-					Math.random = originalRandom;
-				}
+				});
 			});
 
 			it("throws or exits when random failure is triggered", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: now + 5000,
 				});
-				const journalManager = createMockJournalManager(journal);
 
 				const onRandomFailure = vi.fn(() => {
 					throw new Error("Simulated random failure");
 				});
+				const context = createDelayExecutorContext(journal, { onRandomFailure });
+
 				const payload: DelayPayload = { ms: 5000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-					onRandomFailure,
-				};
 
-				// Mock Math.random to always trigger failure
-				const originalRandom = Math.random;
-				Math.random = () => 0.01;
-
-				try {
+				await withMockedRandom(0.01, async () => {
 					const resultPromise = executeDelay(payload, context);
 
 					// Set up rejection handler BEFORE advancing timers to avoid unhandled rejection
@@ -378,30 +287,20 @@ describe("DELAY Executor", () => {
 					await vi.advanceTimersByTimeAsync(1000);
 
 					await rejectionPromise;
-				} finally {
-					Math.random = originalRandom;
-				}
+				});
 			});
 		});
 
 		describe("edge cases", () => {
 			it("handles zero ms delay", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: now, // Zero delay
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: 0 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const result = await executeDelay(payload, context);
 
 				expect(result.ok).toBe(true);
@@ -409,23 +308,15 @@ describe("DELAY Executor", () => {
 			});
 
 			it("handles very long delays correctly", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const longDelay = 3600000; // 1 hour
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: now + longDelay,
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: longDelay };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const resultPromise = executeDelay(payload, context);
 				await vi.advanceTimersByTimeAsync(longDelay);
 				const result = await resultPromise;
@@ -435,22 +326,14 @@ describe("DELAY Executor", () => {
 			});
 
 			it("handles null scheduledEndAt by computing from startedAt + ms", async () => {
-				const { executeDelay } = await import("../executors/delay.js");
-
 				const now = Date.now();
 				const journal = createDelayJournal({
 					startedAt: now,
 					scheduledEndAt: null, // Not set by server (edge case)
 				});
-				const journalManager = createMockJournalManager(journal);
+				const context = createDelayExecutorContext(journal);
 
 				const payload: DelayPayload = { ms: 2000 };
-				const context = {
-					journal,
-					journalManager,
-					checkLeaseValid: () => true,
-				};
-
 				const resultPromise = executeDelay(payload, context);
 				await vi.advanceTimersByTimeAsync(2000);
 				const result = await resultPromise;

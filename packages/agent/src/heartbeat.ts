@@ -1,63 +1,71 @@
-import type { ServerClient } from "./server-client.js";
-import { createLogger } from "./logger.js";
+import type { HeartbeatManager } from "./types";
+import type { ServerClient } from "./types";
+import type { Logger } from "./types";
+import { LoggerImpl } from "./logger";
 
-const logger = createLogger("heartbeat");
+/**
+ * Heartbeat manager implementation for maintaining command leases.
+ * Sends periodic heartbeats to the server to extend the lease.
+ */
+export class HeartbeatManagerImpl implements HeartbeatManager {
+	private timerId: ReturnType<typeof setInterval> | null = null;
+	private currentCommandId: string | null = null;
+	private currentLeaseId: string | null = null;
+	private leaseValid = true;
+	private readonly logger: Logger;
 
-export interface HeartbeatManager {
-	start(commandId: string, leaseId: string): void;
-	stop(): void;
-	isLeaseValid(): boolean;
+	constructor(
+		private readonly serverClient: ServerClient,
+		private readonly intervalMs: number,
+	) {
+		this.logger = new LoggerImpl("heartbeat");
+	}
+
+	start(commandId: string, leaseId: string): void {
+		this.stop(); // Stop any existing heartbeat
+
+		this.currentCommandId = commandId;
+		this.currentLeaseId = leaseId;
+		this.leaseValid = true;
+
+		this.logger.info(`Starting heartbeat for command ${commandId} (interval=${this.intervalMs}ms)`);
+
+		this.timerId = setInterval(async () => {
+			if (!this.currentCommandId || !this.currentLeaseId) {
+				return;
+			}
+
+			const success = await this.serverClient.heartbeat(this.currentCommandId, this.currentLeaseId);
+			if (!success) {
+				this.leaseValid = false;
+				this.logger.warn(`Lease invalidated for command ${this.currentCommandId}`);
+				this.stop();
+			}
+		}, this.intervalMs);
+	}
+
+	stop(): void {
+		if (this.timerId !== null) {
+			clearInterval(this.timerId);
+			this.timerId = null;
+			this.logger.debug(`Stopped heartbeat for command ${this.currentCommandId}`);
+		}
+		this.currentCommandId = null;
+		this.currentLeaseId = null;
+	}
+
+	isLeaseValid(): boolean {
+		return this.leaseValid;
+	}
 }
 
+/**
+ * Factory function for creating heartbeat managers.
+ * @deprecated Use `new HeartbeatManagerImpl(serverClient, intervalMs)` instead.
+ */
 export function createHeartbeatManager(
 	serverClient: ServerClient,
 	intervalMs: number,
 ): HeartbeatManager {
-	let timerId: ReturnType<typeof setInterval> | null = null;
-	let currentCommandId: string | null = null;
-	let currentLeaseId: string | null = null;
-	let leaseValid = true;
-
-	function start(commandId: string, leaseId: string): void {
-		stop(); // Stop any existing heartbeat
-
-		currentCommandId = commandId;
-		currentLeaseId = leaseId;
-		leaseValid = true;
-
-		logger.info(`Starting heartbeat for command ${commandId} (interval=${intervalMs}ms)`);
-
-		timerId = setInterval(async () => {
-			if (!currentCommandId || !currentLeaseId) {
-				return;
-			}
-
-			const success = await serverClient.heartbeat(currentCommandId, currentLeaseId);
-			if (!success) {
-				leaseValid = false;
-				logger.warn(`Lease invalidated for command ${currentCommandId}`);
-				stop();
-			}
-		}, intervalMs);
-	}
-
-	function stop(): void {
-		if (timerId !== null) {
-			clearInterval(timerId);
-			timerId = null;
-			logger.debug(`Stopped heartbeat for command ${currentCommandId}`);
-		}
-		currentCommandId = null;
-		currentLeaseId = null;
-	}
-
-	function isLeaseValid(): boolean {
-		return leaseValid;
-	}
-
-	return {
-		start,
-		stop,
-		isLeaseValid,
-	};
+	return new HeartbeatManagerImpl(serverClient, intervalMs);
 }

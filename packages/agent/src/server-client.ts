@@ -6,32 +6,42 @@ import type {
 	FailRequest,
 	HeartbeatRequest,
 } from "@reliable-server-agent/shared";
-import type { AgentConfig } from "./config.js";
-import { createLogger } from "./logger.js";
-
-const logger = createLogger("server-client");
+import type { AgentConfig } from "./types";
+import type { ServerClient } from "./types";
+import type { Logger } from "./types";
+import { LoggerImpl } from "./logger";
+import { formatError } from "./utils";
 
 /**
- * Multiplier for heartbeat interval to compute lease extension.
+ * Multiplier applied to heartbeat interval to compute lease extension.
  * Using 3x gives headroom for network delays and processing time.
  */
-const LEASE_EXTENSION_MULTIPLIER = 3;
+const HEARTBEAT_TO_LEASE_MULTIPLIER = 3;
 
-export interface ServerClient {
-	claim(): Promise<ClaimCommandResponse | null>;
-	heartbeat(commandId: string, leaseId: string): Promise<boolean>;
-	complete(commandId: string, leaseId: string, result: CommandResult): Promise<boolean>;
-	fail(commandId: string, leaseId: string, error: string, result?: CommandResult): Promise<boolean>;
-}
+/**
+ * Server client implementation for communicating with the control server.
+ * Handles claim, heartbeat, complete, and fail operations.
+ */
+export class ServerClientImpl implements ServerClient {
+	private readonly agentId: string;
+	private readonly serverUrl: string;
+	private readonly maxLeaseMs: number;
+	private readonly heartbeatIntervalMs: number;
+	private readonly logger: Logger;
 
-export function createServerClient(config: AgentConfig): ServerClient {
-	const { agentId, serverUrl, maxLeaseMs, heartbeatIntervalMs } = config;
+	constructor(config: AgentConfig) {
+		this.agentId = config.agentId;
+		this.serverUrl = config.serverUrl;
+		this.maxLeaseMs = config.maxLeaseMs;
+		this.heartbeatIntervalMs = config.heartbeatIntervalMs;
+		this.logger = new LoggerImpl("server-client");
+	}
 
-	async function claim(): Promise<ClaimCommandResponse | null> {
-		const url = `${serverUrl}/commands/claim`;
+	async claim(): Promise<ClaimCommandResponse | null> {
+		const url = `${this.serverUrl}/commands/claim`;
 		const body: ClaimCommandRequest = {
-			agentId,
-			maxLeaseMs,
+			agentId: this.agentId,
+			maxLeaseMs: this.maxLeaseMs,
 		};
 
 		try {
@@ -42,30 +52,30 @@ export function createServerClient(config: AgentConfig): ServerClient {
 			});
 
 			if (response.status === 204) {
-				logger.debug("No work available");
+				this.logger.debug("No work available");
 				return null;
 			}
 
 			if (!response.ok) {
-				logger.error(`Claim failed with status ${response.status}`);
+				this.logger.error(`Claim failed with status ${response.status}`);
 				return null;
 			}
 
 			const data = (await response.json()) as ClaimCommandResponse;
-			logger.info(`Claimed command ${data.commandId} (type=${data.type}, leaseId=${data.leaseId})`);
+			this.logger.info(`Claimed command ${data.commandId} (type=${data.type}, leaseId=${data.leaseId})`);
 			return data;
 		} catch (err) {
-			logger.error(`Claim request failed: ${err instanceof Error ? err.message : String(err)}`);
+			this.logger.error(`Claim request failed: ${formatError(err)}`);
 			return null;
 		}
 	}
 
-	async function heartbeat(commandId: string, leaseId: string): Promise<boolean> {
-		const url = `${serverUrl}/commands/${commandId}/heartbeat`;
+	async heartbeat(commandId: string, leaseId: string): Promise<boolean> {
+		const url = `${this.serverUrl}/commands/${commandId}/heartbeat`;
 		const body: HeartbeatRequest = {
-			agentId,
+			agentId: this.agentId,
 			leaseId,
-			extendMs: heartbeatIntervalMs * LEASE_EXTENSION_MULTIPLIER,
+			extendMs: this.heartbeatIntervalMs * HEARTBEAT_TO_LEASE_MULTIPLIER,
 		};
 
 		try {
@@ -76,27 +86,27 @@ export function createServerClient(config: AgentConfig): ServerClient {
 			});
 
 			if (response.status === 204) {
-				logger.debug(`Heartbeat accepted for command ${commandId}`);
+				this.logger.debug(`Heartbeat accepted for command ${commandId}`);
 				return true;
 			}
 
 			if (response.status === 409) {
-				logger.warn(`Lease expired or replaced for command ${commandId}`);
+				this.logger.warn(`Lease expired or replaced for command ${commandId}`);
 				return false;
 			}
 
-			logger.error(`Heartbeat failed with status ${response.status}`);
+			this.logger.error(`Heartbeat failed with status ${response.status}`);
 			return false;
 		} catch (err) {
-			logger.error(`Heartbeat request failed: ${err instanceof Error ? err.message : String(err)}`);
+			this.logger.error(`Heartbeat request failed: ${formatError(err)}`);
 			return false;
 		}
 	}
 
-	async function complete(commandId: string, leaseId: string, result: CommandResult): Promise<boolean> {
-		const url = `${serverUrl}/commands/${commandId}/complete`;
+	async complete(commandId: string, leaseId: string, result: CommandResult): Promise<boolean> {
+		const url = `${this.serverUrl}/commands/${commandId}/complete`;
 		const body: CompleteRequest = {
-			agentId,
+			agentId: this.agentId,
 			leaseId,
 			result,
 		};
@@ -109,27 +119,27 @@ export function createServerClient(config: AgentConfig): ServerClient {
 			});
 
 			if (response.status === 204) {
-				logger.info(`Completed command ${commandId}`);
+				this.logger.info(`Completed command ${commandId}`);
 				return true;
 			}
 
 			if (response.status === 409) {
-				logger.warn(`Cannot complete command ${commandId}: lease is stale or already completed`);
+				this.logger.warn(`Cannot complete command ${commandId}: lease is stale or already completed`);
 				return false;
 			}
 
-			logger.error(`Complete failed with status ${response.status}`);
+			this.logger.error(`Complete failed with status ${response.status}`);
 			return false;
 		} catch (err) {
-			logger.error(`Complete request failed: ${err instanceof Error ? err.message : String(err)}`);
+			this.logger.error(`Complete request failed: ${formatError(err)}`);
 			return false;
 		}
 	}
 
-	async function fail(commandId: string, leaseId: string, error: string, result?: CommandResult): Promise<boolean> {
-		const url = `${serverUrl}/commands/${commandId}/fail`;
+	async fail(commandId: string, leaseId: string, error: string, result?: CommandResult): Promise<boolean> {
+		const url = `${this.serverUrl}/commands/${commandId}/fail`;
 		const body: FailRequest = {
-			agentId,
+			agentId: this.agentId,
 			leaseId,
 			error,
 			result,
@@ -143,27 +153,20 @@ export function createServerClient(config: AgentConfig): ServerClient {
 			});
 
 			if (response.status === 204) {
-				logger.info(`Failed command ${commandId}: ${error}`);
+				this.logger.info(`Failed command ${commandId}: ${error}`);
 				return true;
 			}
 
 			if (response.status === 409) {
-				logger.warn(`Cannot fail command ${commandId}: lease is stale`);
+				this.logger.warn(`Cannot fail command ${commandId}: lease is stale`);
 				return false;
 			}
 
-			logger.error(`Fail request failed with status ${response.status}`);
+			this.logger.error(`Fail request failed with status ${response.status}`);
 			return false;
 		} catch (err) {
-			logger.error(`Fail request failed: ${err instanceof Error ? err.message : String(err)}`);
+			this.logger.error(`Fail request failed: ${formatError(err)}`);
 			return false;
 		}
 	}
-
-	return {
-		claim,
-		heartbeat,
-		complete,
-		fail,
-	};
 }

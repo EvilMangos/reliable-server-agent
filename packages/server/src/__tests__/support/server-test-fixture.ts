@@ -22,6 +22,8 @@ export async function createTestServer(
 	dbName = "test.db",
 	port = "0",
 ): Promise<TestServerResult> {
+	// Dynamic import required because tests using this fixture call vi.resetModules()
+	// and need fresh module instances
 	const { startServer } = await import("../../index.js");
 
 	const dbPath = path.join(tempDir, dbName);
