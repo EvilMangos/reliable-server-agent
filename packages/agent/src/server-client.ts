@@ -29,12 +29,12 @@ export class ServerClientImpl implements ServerClient {
 	private readonly heartbeatIntervalMs: number;
 	private readonly logger: Logger;
 
-	constructor(config: AgentConfig) {
+	constructor(config: AgentConfig, logger?: Logger) {
 		this.agentId = config.agentId;
 		this.serverUrl = config.serverUrl;
 		this.maxLeaseMs = config.maxLeaseMs;
 		this.heartbeatIntervalMs = config.heartbeatIntervalMs;
-		this.logger = new LoggerImpl("server-client");
+		this.logger = logger ?? new LoggerImpl("server-client");
 	}
 
 	async claim(): Promise<ClaimCommandResponse | null> {

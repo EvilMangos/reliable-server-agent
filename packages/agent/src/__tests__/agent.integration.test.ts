@@ -16,6 +16,7 @@ import type {
 	DelayPayload,
 	HttpGetJsonPayload,
 } from "@reliable-server-agent/shared";
+import { COMMAND_TYPE } from "@reliable-server-agent/shared";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -60,7 +61,7 @@ describe("Agent Integration", () => {
 			const journal = createTestJournal({
 				commandId: "cmd-456",
 				leaseId: "lease-789",
-				type: "HTTP_GET_JSON",
+				type: COMMAND_TYPE.HTTP_GET_JSON,
 				startedAt: Date.now() - 5000,
 				scheduledEndAt: null,
 				httpSnapshot: {
@@ -110,7 +111,7 @@ describe("Agent Integration", () => {
 			const journal = createTestJournal({
 				commandId: "cmd-789",
 				leaseId: "lease-012",
-				type: "DELAY",
+				type: COMMAND_TYPE.DELAY,
 				startedAt: Date.now() - 2000,
 				scheduledEndAt: Date.now() - 1000, // Already past
 				stage: "RESULT_SAVED",
@@ -132,7 +133,7 @@ describe("Agent Integration", () => {
 			const journal = createTestJournal({
 				commandId: "cmd-stale",
 				leaseId: "lease-stale",
-				type: "HTTP_GET_JSON",
+				type: COMMAND_TYPE.HTTP_GET_JSON,
 				startedAt: Date.now() - 60000,
 				scheduledEndAt: null,
 				httpSnapshot: {
@@ -162,7 +163,7 @@ describe("Agent Integration", () => {
 			const journal = createTestJournal({
 				commandId: "cmd-delay",
 				leaseId: "lease-delay",
-				type: "DELAY",
+				type: COMMAND_TYPE.DELAY,
 				startedAt: now - 3000, // Started 3s ago
 				scheduledEndAt: now + 2000, // 2s remaining
 				stage: "IN_PROGRESS",
@@ -194,7 +195,7 @@ describe("Agent Integration", () => {
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-exec",
-				type: "DELAY",
+				type: COMMAND_TYPE.DELAY,
 				payload: { ms: 1000 } as DelayPayload,
 				leaseId: "lease-exec",
 				leaseExpiresAt: Date.now() + 30000,
@@ -237,7 +238,7 @@ describe("Agent Integration", () => {
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-hb",
-				type: "DELAY",
+				type: COMMAND_TYPE.DELAY,
 				payload: { ms: 20000 } as DelayPayload,
 				leaseId: "lease-hb",
 				leaseExpiresAt: Date.now() + 30000,
@@ -269,7 +270,7 @@ describe("Agent Integration", () => {
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-hbstop",
-				type: "DELAY",
+				type: COMMAND_TYPE.DELAY,
 				payload: { ms: 3000 } as DelayPayload,
 				leaseId: "lease-hbstop",
 				leaseExpiresAt: Date.now() + 30000,
@@ -303,7 +304,7 @@ describe("Agent Integration", () => {
 			const journal = createTestJournal({
 				commandId: "cmd-409",
 				leaseId: "lease-409",
-				type: "DELAY",
+				type: COMMAND_TYPE.DELAY,
 				startedAt: Date.now() - 2000,
 				scheduledEndAt: Date.now() - 1000, // Already past
 				stage: "RESULT_SAVED",
@@ -332,7 +333,7 @@ describe("Agent Integration", () => {
 						json: () =>
 							Promise.resolve({
 								commandId: "cmd-noretry",
-								type: "DELAY",
+								type: COMMAND_TYPE.DELAY,
 								payload: { ms: 100 },
 								leaseId: "lease-noretry",
 								leaseExpiresAt: Date.now() + 30000,
@@ -363,7 +364,7 @@ describe("Agent Integration", () => {
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-route-delay",
-				type: "DELAY",
+				type: COMMAND_TYPE.DELAY,
 				payload: { ms: 500 } as DelayPayload,
 				leaseId: "lease-route-delay",
 				leaseExpiresAt: Date.now() + 30000,
@@ -406,7 +407,7 @@ describe("Agent Integration", () => {
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-route-http",
-				type: "HTTP_GET_JSON",
+				type: COMMAND_TYPE.HTTP_GET_JSON,
 				payload: { url: "http://example.com/api" } as HttpGetJsonPayload,
 				leaseId: "lease-route-http",
 				leaseExpiresAt: Date.now() + 30000,
@@ -531,7 +532,7 @@ describe("Agent Integration", () => {
 
 			const claimResponse: ClaimCommandResponse = {
 				commandId: "cmd-expiry",
-				type: "DELAY",
+				type: COMMAND_TYPE.DELAY,
 				payload: { ms: 10000 } as DelayPayload,
 				leaseId: "lease-expiry",
 				leaseExpiresAt: Date.now() + 30000,

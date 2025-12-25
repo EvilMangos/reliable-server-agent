@@ -1,39 +1,66 @@
 import type {
 	ClaimCommandResponse,
+	CommandPayload,
 	CommandResult,
-	DelayPayload,
 	DelayResult,
-	HttpGetJsonPayload,
 } from "@reliable-server-agent/shared";
-import type { Agent, AgentConfig, DelayExecutionContext, HttpGetJsonExecutionContext } from "./types";
+import { COMMAND_TYPE } from "@reliable-server-agent/shared";
+import type { Agent, AgentConfig, HeartbeatManager, JournalManager, Logger, ServerClient } from "./types";
+import type { ExecutorRegistry } from "./di";
 import { HeartbeatManagerImpl } from "./heartbeat";
 import { JournalManagerImpl } from "./journal";
 import { LoggerImpl } from "./logger";
-import { formatError } from "./utils";
+import { formatError, sleep } from "./utils";
 import { ServerClientImpl } from "./server-client";
-import { executeDelay } from "./executors";
-import { executeHttpGetJson } from "./executors";
-import { sleep } from "./utils";
-import type { HeartbeatManager } from "./types";
-import type { JournalManager } from "./types";
-import type { ServerClient } from "./types";
-
-const logger = new LoggerImpl("agent");
+import { DelayExecutor, HttpGetJsonExecutor } from "./executors";
 
 /**
  * Agent implementation that polls for work and executes commands.
  */
 export class AgentImpl implements Agent {
+	private readonly logger: Logger;
 	private readonly serverClient: ServerClient;
 	private readonly journalManager: JournalManager;
 	private readonly heartbeatManager: HeartbeatManager;
+	private readonly executorRegistry: ExecutorRegistry;
 	private running = false;
 	private killTimeout: ReturnType<typeof setTimeout> | null = null;
 
-	constructor(private readonly config: AgentConfig) {
-		this.serverClient = new ServerClientImpl(config);
-		this.journalManager = new JournalManagerImpl(config.stateDir, config.agentId);
-		this.heartbeatManager = new HeartbeatManagerImpl(this.serverClient, config.heartbeatIntervalMs);
+	/**
+	 * Create a new agent with injected dependencies.
+	 * For backwards compatibility, dependencies are optional and will be created if not provided.
+	 */
+	constructor(
+		private readonly config: AgentConfig,
+		logger?: Logger,
+		serverClient?: ServerClient,
+		journalManager?: JournalManager,
+		heartbeatManager?: HeartbeatManager,
+		executorRegistry?: ExecutorRegistry,
+	) {
+		this.logger = logger ?? new LoggerImpl("agent");
+		this.serverClient = serverClient ?? new ServerClientImpl(config);
+		this.journalManager = journalManager ?? new JournalManagerImpl(config.stateDir, config.agentId);
+		this.heartbeatManager = heartbeatManager ?? new HeartbeatManagerImpl(
+			this.serverClient,
+			config.heartbeatIntervalMs,
+		);
+
+		// Build executor registry if not provided
+		if (executorRegistry) {
+			this.executorRegistry = executorRegistry;
+		} else {
+			const onRandomFailure = config.randomFailures ? this.simulateRandomFailure.bind(this) : undefined;
+			this.executorRegistry = new Map();
+			this.executorRegistry.set(
+				COMMAND_TYPE.DELAY,
+				new DelayExecutor(this.logger, this.journalManager, onRandomFailure),
+			);
+			this.executorRegistry.set(
+				COMMAND_TYPE.HTTP_GET_JSON,
+				new HttpGetJsonExecutor(this.logger, this.journalManager, onRandomFailure),
+			);
+		}
 	}
 
 	/**
@@ -42,11 +69,11 @@ export class AgentImpl implements Agent {
 	async recoverFromJournal(): Promise<void> {
 		const journal = this.journalManager.load();
 		if (!journal) {
-			logger.debug("No journal found, starting fresh");
+			this.logger.debug("No journal found, starting fresh");
 			return;
 		}
 
-		logger.info(`Recovering from journal: command=${journal.commandId}, stage=${journal.stage}`);
+		this.logger.info(`Recovering from journal: command=${journal.commandId}, stage=${journal.stage}`);
 
 		// Start heartbeat for the saved command
 		this.heartbeatManager.start(journal.commandId, journal.leaseId);
@@ -54,33 +81,35 @@ export class AgentImpl implements Agent {
 		try {
 			if (journal.stage === "RESULT_SAVED") {
 				// We have a saved result, try to report it
-				const result = journal.type === "HTTP_GET_JSON" && journal.httpSnapshot
+				const result = journal.type === COMMAND_TYPE.HTTP_GET_JSON && journal.httpSnapshot
 					? journal.httpSnapshot
 					: this.computeDelayResult(journal);
 
 				await this.reportCompletion(journal.commandId, journal.leaseId, result);
-			} else if (journal.type === "DELAY" && journal.scheduledEndAt !== null) {
+			} else if (journal.type === COMMAND_TYPE.DELAY && journal.scheduledEndAt !== null) {
 				// Resume DELAY command
-				const context: DelayExecutionContext = {
-					journal,
-					journalManager: this.journalManager,
-					checkLeaseValid: () => this.heartbeatManager.isLeaseValid(),
-					onRandomFailure: this.config.randomFailures ? this.simulateRandomFailure : undefined,
-				};
-
+				const executor = this.executorRegistry.get(COMMAND_TYPE.DELAY);
+				if (!executor) {
+					this.logger.error("No executor registered for DELAY command type");
+					this.journalManager.delete();
+					return;
+				}
 				try {
-					const result = await executeDelay({ ms: journal.scheduledEndAt - journal.startedAt }, context);
+					const result = await executor.execute(
+						{ ms: journal.scheduledEndAt - journal.startedAt },
+						{ journal, checkLeaseValid: () => this.heartbeatManager.isLeaseValid() },
+					);
 					// Save stage to RESULT_SAVED before reporting (idempotency)
 					this.journalManager.updateStage(journal, "RESULT_SAVED");
 					await this.reportCompletion(journal.commandId, journal.leaseId, result);
 				} catch (err) {
 					// Lease expired or other error - delete journal and move on
-					logger.warn(`Recovery failed: ${formatError(err)}`);
+					this.logger.warn(`Recovery failed: ${formatError(err)}`);
 					this.journalManager.delete();
 				}
 			} else {
 				// Unknown state, delete journal and move on
-				logger.warn("Unknown journal state, deleting and moving on");
+				this.logger.warn("Unknown journal state, deleting and moving on");
 				this.journalManager.delete();
 			}
 		} finally {
@@ -97,7 +126,7 @@ export class AgentImpl implements Agent {
 		try {
 			claimed = await this.serverClient.claim();
 		} catch (err) {
-			logger.error(`Claim failed: ${formatError(err)}`);
+			this.logger.error(`Claim failed: ${formatError(err)}`);
 			return;
 		}
 
@@ -115,28 +144,22 @@ export class AgentImpl implements Agent {
 		this.heartbeatManager.start(commandId, leaseId);
 
 		try {
-			let result: CommandResult;
+			// Get executor for command type
+			const executor = this.executorRegistry.get(type);
+			if (!executor) {
+				throw new Error(`No executor registered for command type: ${type}`);
+			}
 
-			if (type === "DELAY") {
-				const context: DelayExecutionContext = {
-					journal,
-					journalManager: this.journalManager,
-					checkLeaseValid: () => this.heartbeatManager.isLeaseValid(),
-					onRandomFailure: this.config.randomFailures ? this.simulateRandomFailure : undefined,
-				};
-				result = await executeDelay(payload as DelayPayload, context);
-				// Save stage to RESULT_SAVED before reporting (idempotency)
+			// Execute the command
+			const result = await executor.execute(
+				payload as CommandPayload,
+				{ journal, checkLeaseValid: () => this.heartbeatManager.isLeaseValid() },
+			);
+
+			// For DELAY commands, save stage to RESULT_SAVED before reporting (idempotency)
+			// HTTP_GET_JSON executor already saves httpSnapshot with RESULT_SAVED stage
+			if (type === COMMAND_TYPE.DELAY) {
 				this.journalManager.updateStage(journal, "RESULT_SAVED");
-			} else if (type === "HTTP_GET_JSON") {
-				const context: HttpGetJsonExecutionContext = {
-					journal,
-					journalManager: this.journalManager,
-					onRandomFailure: this.config.randomFailures ? this.simulateRandomFailure : undefined,
-				};
-				result = await executeHttpGetJson(payload as HttpGetJsonPayload, context);
-				// Note: HTTP_GET_JSON executor already saves httpSnapshot with RESULT_SAVED stage
-			} else {
-				throw new Error(`Unknown command type: ${type}`);
 			}
 
 			// Stop heartbeat before reporting
@@ -146,14 +169,14 @@ export class AgentImpl implements Agent {
 			await this.reportCompletion(commandId, leaseId, result);
 		} catch (err) {
 			this.heartbeatManager.stop();
-			logger.error(`Command ${commandId} execution failed: ${formatError(err)}`);
+			this.logger.error(`Command ${commandId} execution failed: ${formatError(err)}`);
 			// Don't report failure for lease expiry - just delete journal and move on
 			if (err instanceof Error && err.message.includes("lease")) {
 				this.journalManager.delete();
 			} else {
 				// For unexpected errors, log and delete journal to prevent getting stuck
 				// Agent continues running - this is more fault-tolerant than crashing
-				logger.error(`Unexpected error, deleting journal and continuing: ${formatError(err)}`);
+				this.logger.error(`Unexpected error, deleting journal and continuing: ${formatError(err)}`);
 				this.journalManager.delete();
 			}
 		}
@@ -164,12 +187,12 @@ export class AgentImpl implements Agent {
 	 */
 	async start(): Promise<void> {
 		this.running = true;
-		logger.info(`Agent ${this.config.agentId} starting`);
+		this.logger.info(`Agent ${this.config.agentId} starting`);
 
 		// Set up kill timeout if configured
 		if (this.config.killAfterSeconds !== null) {
 			this.killTimeout = setTimeout(() => {
-				logger.info(`Kill timeout reached after ${this.config.killAfterSeconds} seconds`);
+				this.logger.info(`Kill timeout reached after ${this.config.killAfterSeconds} seconds`);
 				process.exit(0);
 			}, this.config.killAfterSeconds * 1000);
 		}
@@ -183,7 +206,7 @@ export class AgentImpl implements Agent {
 				await this.runOneIteration();
 			} catch (err) {
 				// Catch any unexpected errors to prevent agent crash
-				logger.error(`Unexpected error in main loop: ${formatError(err)}`);
+				this.logger.error(`Unexpected error in main loop: ${formatError(err)}`);
 				// Continue running - agent should be fault-tolerant
 			}
 			await sleep(this.config.pollIntervalMs);
@@ -200,7 +223,7 @@ export class AgentImpl implements Agent {
 			clearTimeout(this.killTimeout);
 			this.killTimeout = null;
 		}
-		logger.info("Agent stopped");
+		this.logger.info("Agent stopped");
 	}
 
 	/**
@@ -219,9 +242,9 @@ export class AgentImpl implements Agent {
 	private async reportCompletion(commandId: string, leaseId: string, result: CommandResult): Promise<void> {
 		const success = await this.serverClient.complete(commandId, leaseId, result);
 		if (success) {
-			logger.info(`Command ${commandId} completed successfully`);
+			this.logger.info(`Command ${commandId} completed successfully`);
 		} else {
-			logger.warn(`Command ${commandId} completion rejected (409 or error)`);
+			this.logger.warn(`Command ${commandId} completion rejected (409 or error)`);
 		}
 		// Delete journal regardless of success (409 means lease is stale)
 		this.journalManager.delete();
@@ -231,7 +254,7 @@ export class AgentImpl implements Agent {
 	 * Simulate a random failure by exiting the process.
 	 */
 	private simulateRandomFailure(): void {
-		logger.warn("Random failure triggered - exiting process");
+		this.logger.warn("Random failure triggered - exiting process");
 		process.exit(1);
 	}
 }

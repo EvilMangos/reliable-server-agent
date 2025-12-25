@@ -3,16 +3,16 @@
  *
  * Provides:
  * - Factory functions for creating test configs and journals
- * - Mock implementations for JournalManager
- * - Executor context factories for delay and http tests
+ * - Mock implementations for JournalManager and Logger
+ * - Executor factories for delay and http tests
  * - Fetch mock helpers for simulating server responses
  */
 
 import { vi } from "vitest";
 import type { AgentJournal, ClaimCommandResponse } from "@reliable-server-agent/shared";
-import type { AgentConfig } from "../types";
-import type { JournalManager } from "../types";
-import type { DelayExecutionContext } from "../types";
+import { COMMAND_TYPE } from "@reliable-server-agent/shared";
+import type { AgentConfig, JournalManager, Logger } from "../types";
+import { DelayExecutor } from "../executors";
 
 /**
  * Creates a default AgentConfig with sensible test defaults.
@@ -45,7 +45,7 @@ export function createTestJournal(
 	return {
 		commandId: "cmd-123",
 		leaseId: "lease-456",
-		type: "DELAY",
+		type: COMMAND_TYPE.DELAY,
 		startedAt: Date.now(),
 		scheduledEndAt: Date.now() + 5000,
 		httpSnapshot: null,
@@ -58,13 +58,13 @@ export function createTestJournal(
  * Creates a mock JournalManager for testing.
  * All methods are Vitest mocks that can be inspected.
  */
-export function createMockJournalManager(journal: AgentJournal): JournalManager {
+export function createMockJournalManager(journal?: AgentJournal): JournalManager {
 	return {
 		getJournalPath: vi.fn(() => "/mock/path/agent.json"),
-		load: vi.fn(() => journal),
+		load: vi.fn(() => journal ?? null),
 		save: vi.fn(),
 		delete: vi.fn(),
-		createClaimed: vi.fn(() => journal),
+		createClaimed: vi.fn(() => journal ?? createTestJournal()),
 		updateStage: vi.fn((j: AgentJournal, stage: string) => {
 			j.stage = stage as AgentJournal["stage"];
 		}),
@@ -72,37 +72,55 @@ export function createMockJournalManager(journal: AgentJournal): JournalManager 
 	};
 }
 
+/**
+ * Creates a mock Logger for testing.
+ * All methods are no-op Vitest mocks that can be inspected.
+ */
+export function createMockLogger(): Logger {
+	return {
+		debug: vi.fn(),
+		info: vi.fn(),
+		warn: vi.fn(),
+		error: vi.fn(),
+	};
+}
+
 // =============================================================================
-// Executor Context Factories
+// Executor Factories
 // =============================================================================
 
 /**
- * Override options for delay executor context.
+ * Options for creating a test DelayExecutor.
  */
-export interface DelayExecutorContextOverrides {
-	checkLeaseValid?: () => boolean;
+export interface DelayExecutorTestOptions {
 	onRandomFailure?: () => void;
 }
 
 /**
- * Creates a complete context for delay executor tests.
- * Reduces boilerplate by combining journal + journalManager + checkLeaseValid.
- *
- * @param journal - The test journal (use createTestJournal to create one)
- * @param overrides - Optional overrides for checkLeaseValid and onRandomFailure
- * @returns A context object ready for executeDelay
+ * Result of creating a test DelayExecutor.
  */
-export function createDelayExecutorContext(
-	journal: AgentJournal,
-	overrides?: DelayExecutorContextOverrides,
-): DelayExecutionContext {
+export interface DelayExecutorTestContext {
+	executor: DelayExecutor;
+	logger: Logger;
+	journalManager: JournalManager;
+}
+
+/**
+ * Creates a DelayExecutor with mock dependencies for testing.
+ *
+ * @param journal - Optional journal to preload in the mock JournalManager
+ * @param options - Optional configuration for onRandomFailure
+ * @returns The executor and its mock dependencies for assertions
+ */
+export function createTestDelayExecutor(
+	journal?: AgentJournal,
+	options?: DelayExecutorTestOptions,
+): DelayExecutorTestContext {
+	const logger = createMockLogger();
 	const journalManager = createMockJournalManager(journal);
-	return {
-		journal,
-		journalManager,
-		checkLeaseValid: overrides?.checkLeaseValid ?? (() => true),
-		...(overrides?.onRandomFailure && { onRandomFailure: overrides.onRandomFailure }),
-	};
+	const executor = new DelayExecutor(logger, journalManager, options?.onRandomFailure);
+
+	return { executor, logger, journalManager };
 }
 
 // =============================================================================

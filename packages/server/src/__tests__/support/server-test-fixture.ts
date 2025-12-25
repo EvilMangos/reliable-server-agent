@@ -1,6 +1,6 @@
 import * as http from "http";
 import * as path from "path";
-import type { CommandDatabase } from "../../store/database.js";
+import type { CommandDatabase } from "../../store";
 
 export interface TestServerResult {
 	server: http.Server;

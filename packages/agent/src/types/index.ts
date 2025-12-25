@@ -3,7 +3,7 @@
  */
 export type { Agent } from "./agent";
 export type { AgentConfig } from "./agent-config";
-export type { DelayExecutionContext, HttpGetJsonExecutionContext } from "./executor-context";
+export type { Executor, ExecutorContext } from "./executor";
 export type { HeartbeatManager } from "./heartbeat-manager";
 export type { JournalManager } from "./journal-manager";
 export type { Logger } from "./logger";

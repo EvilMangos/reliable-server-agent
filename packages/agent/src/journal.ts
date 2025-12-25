@@ -18,9 +18,10 @@ export class JournalManagerImpl implements JournalManager {
 	constructor(
 		private readonly stateDir: string,
 		agentId: string,
+		logger?: Logger,
 	) {
 		this.journalPath = path.join(stateDir, `${agentId}.json`);
-		this.logger = new LoggerImpl("journal");
+		this.logger = logger ?? new LoggerImpl("journal");
 	}
 
 	private ensureDir(): void {

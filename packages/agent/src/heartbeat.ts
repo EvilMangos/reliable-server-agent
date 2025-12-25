@@ -17,8 +17,9 @@ export class HeartbeatManagerImpl implements HeartbeatManager {
 	constructor(
 		private readonly serverClient: ServerClient,
 		private readonly intervalMs: number,
+		logger?: Logger,
 	) {
-		this.logger = new LoggerImpl("heartbeat");
+		this.logger = logger ?? new LoggerImpl("heartbeat");
 	}
 
 	start(commandId: string, leaseId: string): void {

@@ -4,7 +4,7 @@
  */
 
 import { loadConfig } from "./config";
-import { AgentImpl } from "./index";
+import { createAgent } from "./di";
 
 /**
  * Check if this module is being run directly (as CLI entry point).
@@ -28,7 +28,7 @@ function isMainModule(): boolean {
 // CLI entry point
 if (isMainModule()) {
 	const config = loadConfig(process.argv.slice(2));
-	const agent = new AgentImpl(config);
+	const agent = createAgent(config);
 	agent.start().catch((err: Error) => {
 		console.error("Agent failed:", err);
 		process.exit(1);
