@@ -95,9 +95,26 @@ export async function startServer(containerOverride?: Container): Promise<Server
 	});
 
 	// Register signal handlers for graceful shutdown
+	let isShuttingDown = false;
 	const shutdown = () => {
-		server.close();
-		disposeContainer(container);
+		if (isShuttingDown) return;
+		isShuttingDown = true;
+
+		console.log("Shutting down gracefully...");
+
+		// Stop accepting new connections and wait for existing ones to finish
+		server.close(() => {
+			console.log("All connections closed, disposing resources...");
+			disposeContainer(container);
+			process.exit(0);
+		});
+
+		// Force exit after timeout if connections don't drain
+		setTimeout(() => {
+			console.warn("Forcing shutdown after timeout");
+			disposeContainer(container);
+			process.exit(1);
+		}, 10000);
 	};
 
 	process.on("SIGINT", shutdown);
