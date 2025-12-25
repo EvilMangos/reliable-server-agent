@@ -23,7 +23,9 @@ export interface ServerInstance {
 export async function startServer(): Promise<ServerInstance> {
 	// Read configuration from environment
 	const dbPath = process.env.DATABASE_PATH || "./data/commands.db";
-	const port = parseInt(process.env.PORT || "3000", 10) || 3000;
+	// Use PORT=0 for dynamic port assignment, default to 3000 if PORT is not set
+	const portEnv = process.env.PORT;
+	const port = portEnv !== undefined ? parseInt(portEnv, 10) : 3000;
 
 	// Ensure database directory exists
 	const dbDir = path.dirname(dbPath);
@@ -53,7 +55,12 @@ export async function startServer(): Promise<ServerInstance> {
 	// Start server with promise wrapper
 	const server = await new Promise<http.Server>((resolve, reject) => {
 		const httpServer = app.listen(port, () => {
-			console.log(`Server started on port ${port}`);
+			// Get the actual port in case port 0 was used for dynamic assignment
+			const address = httpServer.address();
+			const actualPort = typeof address === "object" && address !== null
+				? address.port
+				: port;
+			console.log(`Server started on port ${actualPort}`);
 			resolve(httpServer);
 		});
 
@@ -73,6 +80,29 @@ export async function startServer(): Promise<ServerInstance> {
 	process.on("SIGTERM", shutdown);
 
 	return { app, server, db };
+}
+
+/**
+ * Check if this module is being run directly (as CLI entry point).
+ */
+function isMainModule(): boolean {
+	const scriptPath = process.argv[1];
+	if (!scriptPath) {
+		return false;
+	}
+	// Check if the script path contains our module name
+	return scriptPath.includes("packages/server") && (
+		scriptPath.endsWith("index.js") ||
+		scriptPath.endsWith("index.ts")
+	);
+}
+
+// CLI entry point
+if (isMainModule()) {
+	startServer().catch(err => {
+		console.error("Server failed:", err);
+		process.exit(1);
+	});
 }
 
 // Start server when run directly (not when imported as a module in tests)

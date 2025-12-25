@@ -6,7 +6,7 @@ export default defineConfig({
 		environment: "node",
 		setupFiles: ["./vitest.setup.ts"],
 		include: ["packages/**/*.test.ts", "packages/**/*.spec.ts"],
-		exclude: ["**/node_modules/**", "**/dist/**"],
+		exclude: ["**/node_modules/**", "**/dist/**", "**/packages/e2e/**"],
 		pool: "forks",
 		poolOptions: {
 			forks: {
