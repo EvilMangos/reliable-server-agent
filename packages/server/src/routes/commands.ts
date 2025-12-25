@@ -1,190 +1,141 @@
 import { type Request, type Response, Router } from "express";
-import { randomUUID } from "crypto";
 import type {
 	ClaimCommandRequest,
 	ClaimCommandResponse,
-	CommandPayload,
 	CompleteRequest,
 	CreateCommandRequest,
-	CreateCommandResponse,
 	FailRequest,
 	GetCommandResponse,
 	HeartbeatRequest,
 } from "@reliable-server-agent/shared";
-import type { CommandDatabase } from "../store/database.js";
+import type { CommandService } from "../service/index.js";
+import { asyncHandler } from "./middleware/index.js";
+import { ValidationError } from "./errors/index.js";
+import { requireLeaseRequest, requireNumber, requireString } from "./utils/index.js";
 
 /**
- * Create command routes
+ * Create command routes using the service layer
+ *
+ * All handlers use asyncHandler wrapper which forwards errors to the
+ * centralized error middleware. Validation errors throw ValidationError,
+ * and service errors are propagated directly.
  */
-export function createCommandRoutes(db: CommandDatabase): Router {
+export function createCommandRoutes(service: CommandService): Router {
 	const router = Router();
 
 	// POST /commands - Create a new command
-	router.post("/", (req: Request, res: Response) => {
-		const body = req.body as CreateCommandRequest;
+	router.post(
+		"/",
+		asyncHandler((req: Request, res: Response) => {
+			const { type, payload } = req.body as CreateCommandRequest;
 
-		if (!body.type || !body.payload) {
-			res.status(400).json({ error: "Missing type or payload" });
-			return;
-		}
+			if (!type || !payload) {
+				throw new ValidationError("Missing type or payload");
+			}
 
-		if (body.type !== "DELAY" && body.type !== "HTTP_GET_JSON") {
-			res.status(400).json({ error: "Invalid command type" });
-			return;
-		}
-
-		const commandId = randomUUID();
-		const now = Date.now();
-
-		try {
-			db.createCommand(commandId, body.type, body.payload, now);
-			const response: CreateCommandResponse = { commandId };
-			res.status(201).json(response);
-		} catch (error) {
-			console.error("Failed to create command:", error);
-			res.status(500).json({ error: "Failed to create command" });
-		}
-	});
+			const commandId = service.createCommand(type, payload);
+			res.status(201).json({ commandId });
+		}),
+	);
 
 	// GET /commands/:id - Get command status and result
-	router.get("/:id", (req: Request, res: Response) => {
-		const { id } = req.params;
+	router.get(
+		"/:id",
+		asyncHandler((req: Request, res: Response) => {
+			const { id } = req.params;
+			const command = service.getCommand(id);
 
-		const command = db.getCommand(id);
-		if (!command) {
-			res.status(404).json({ error: "Command not found" });
-			return;
-		}
+			const response: GetCommandResponse = {
+				status: command.status,
+			};
 
-		const response: GetCommandResponse = {
-			status: command.status,
-		};
+			if (command.result) {
+				response.result = command.result;
+			}
 
-		if (command.resultJson) {
-			response.result = JSON.parse(command.resultJson);
-		}
+			if (command.agentId) {
+				response.agentId = command.agentId;
+			}
 
-		if (command.agentId) {
-			response.agentId = command.agentId;
-		}
-
-		res.json(response);
-	});
+			res.json(response);
+		}),
+	);
 
 	// POST /commands/claim - Agent claims a command
-	router.post("/claim", (req: Request, res: Response) => {
-		const body = req.body as ClaimCommandRequest;
+	router.post(
+		"/claim",
+		asyncHandler((req: Request, res: Response) => {
+			const body = req.body as Partial<ClaimCommandRequest>;
+			const agentId = requireString(body, "agentId");
+			const maxLeaseMs = requireNumber(body, "maxLeaseMs");
 
-		if (!body.agentId || typeof body.maxLeaseMs !== "number") {
-			res.status(400).json({ error: "Missing agentId or maxLeaseMs" });
-			return;
-		}
+			const claim = service.claimNextCommand(agentId, maxLeaseMs);
 
-		const leaseId = randomUUID();
-		const now = Date.now();
-
-		try {
-			const command = db.claimCommand(body.agentId, leaseId, body.maxLeaseMs, now);
-
-			if (!command) {
+			if (!claim) {
 				res.status(204).send();
 				return;
 			}
 
-			const payload = JSON.parse(command.payloadJson) as CommandPayload;
 			const response: ClaimCommandResponse = {
-				commandId: command.id,
-				type: command.type,
-				payload,
-				leaseId: command.leaseId!,
-				leaseExpiresAt: command.leaseExpiresAt!,
-				startedAt: command.startedAt!,
-				scheduledEndAt: command.scheduledEndAt,
+				commandId: claim.commandId,
+				type: claim.type,
+				payload: claim.payload,
+				leaseId: claim.leaseId,
+				leaseExpiresAt: claim.leaseExpiresAt,
+				startedAt: claim.startedAt,
+				scheduledEndAt: claim.scheduledEndAt,
 			};
 
 			res.json(response);
-		} catch (error) {
-			console.error("Failed to claim command:", error);
-			res.status(500).json({ error: "Failed to claim command" });
-		}
-	});
+		}),
+	);
 
 	// POST /commands/:id/heartbeat - Extend lease
-	router.post("/:id/heartbeat", (req: Request, res: Response) => {
-		const { id } = req.params;
-		const body = req.body as HeartbeatRequest;
+	router.post(
+		"/:id/heartbeat",
+		asyncHandler((req: Request, res: Response) => {
+			const { id } = req.params;
+			const { agentId, leaseId } = requireLeaseRequest(req.body);
+			const extendMs = requireNumber(req.body as HeartbeatRequest, "extendMs");
 
-		if (!body.agentId || !body.leaseId || typeof body.extendMs !== "number") {
-			res.status(400).json({ error: "Missing agentId, leaseId, or extendMs" });
-			return;
-		}
-
-		const now = Date.now();
-
-		try {
-			const success = db.heartbeat(id, body.agentId, body.leaseId, body.extendMs, now);
-
-			if (!success) {
-				res.status(409).json({ error: "Lease is not current" });
-				return;
-			}
-
+			service.recordHeartbeat(id, agentId, leaseId, extendMs);
 			res.status(204).send();
-		} catch (error) {
-			console.error("Failed to heartbeat:", error);
-			res.status(500).json({ error: "Failed to heartbeat" });
-		}
-	});
+		}),
+	);
 
 	// POST /commands/:id/complete - Complete command with result
-	router.post("/:id/complete", (req: Request, res: Response) => {
-		const { id } = req.params;
-		const body = req.body as CompleteRequest;
+	router.post(
+		"/:id/complete",
+		asyncHandler((req: Request, res: Response) => {
+			const { id } = req.params;
+			const { agentId, leaseId } = requireLeaseRequest(req.body);
+			const body = req.body as CompleteRequest;
 
-		if (!body.agentId || !body.leaseId || !body.result) {
-			res.status(400).json({ error: "Missing agentId, leaseId, or result" });
-			return;
-		}
-
-		try {
-			const success = db.completeCommand(id, body.agentId, body.leaseId, body.result);
-
-			if (!success) {
-				res.status(409).json({ error: "Lease is not current" });
-				return;
+			if (!body.result) {
+				throw new ValidationError("Missing agentId, leaseId, or result");
 			}
 
+			service.completeCommand(id, agentId, leaseId, body.result);
 			res.status(204).send();
-		} catch (error) {
-			console.error("Failed to complete command:", error);
-			res.status(500).json({ error: "Failed to complete command" });
-		}
-	});
+		}),
+	);
 
 	// POST /commands/:id/fail - Fail command with error
-	router.post("/:id/fail", (req: Request, res: Response) => {
-		const { id } = req.params;
-		const body = req.body as FailRequest;
+	router.post(
+		"/:id/fail",
+		asyncHandler((req: Request, res: Response) => {
+			const { id } = req.params;
+			const { agentId, leaseId } = requireLeaseRequest(req.body);
+			const body = req.body as FailRequest;
 
-		if (!body.agentId || !body.leaseId || !body.error) {
-			res.status(400).json({ error: "Missing agentId, leaseId, or error" });
-			return;
-		}
-
-		try {
-			const success = db.failCommand(id, body.agentId, body.leaseId, body.error, body.result);
-
-			if (!success) {
-				res.status(409).json({ error: "Lease is not current" });
-				return;
+			if (!body.error) {
+				throw new ValidationError("Missing agentId, leaseId, or error");
 			}
 
+			service.failCommand(id, agentId, leaseId, body.error, body.result);
 			res.status(204).send();
-		} catch (error) {
-			console.error("Failed to fail command:", error);
-			res.status(500).json({ error: "Failed to fail command" });
-		}
-	});
+		}),
+	);
 
 	return router;
 }

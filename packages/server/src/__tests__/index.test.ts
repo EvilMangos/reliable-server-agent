@@ -2,8 +2,11 @@ import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } fr
 import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
+import { COMMAND_STATUS, COMMAND_TYPE } from "@reliable-server-agent/shared";
 import { httpRequest } from "./support/http-test-client.js";
 import { closeTestServer, createTestServer } from "./support/server-test-fixture.js";
+import { startServer } from "../index.js";
+import { createCommandDatabase } from "../store/index.js";
 
 /**
  * Tests for server entry point (index.ts)
@@ -64,7 +67,7 @@ describe("server entry point (index.ts)", () => {
 			try {
 				// Verify JSON body parsing works by making a POST request
 				const response = await httpRequest(server, "POST", "/commands", {
-					type: "DELAY",
+					type: COMMAND_TYPE.DELAY,
 					payload: { ms: 1000 },
 				});
 
@@ -72,7 +75,7 @@ describe("server entry point (index.ts)", () => {
 				expect(response.status).toBe(201);
 				expect(response.body).toHaveProperty("commandId");
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 	});
@@ -88,20 +91,18 @@ describe("server entry point (index.ts)", () => {
 				// Verify WAL mode is enabled (check for -wal file after first write)
 				// WAL mode creates a -wal file on first transaction
 				await httpRequest(server, "POST", "/commands", {
-					type: "DELAY",
+					type: COMMAND_TYPE.DELAY,
 					payload: { ms: 100 },
 				});
 
 				// WAL mode should create a .db-wal file
 				expect(fs.existsSync(`${dbPath}-wal`)).toBe(true);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 
 		it("uses default database path ./data/commands.db when DATABASE_PATH not set", async () => {
-			const { startServer } = await import("../index.js");
-
 			// Ensure DATABASE_PATH is not set
 			delete process.env.DATABASE_PATH;
 			process.env.PORT = "0";
@@ -119,7 +120,7 @@ describe("server entry point (index.ts)", () => {
 				const defaultDbPath = path.join(process.cwd(), "data", "commands.db");
 				expect(fs.existsSync(defaultDbPath)).toBe(true);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 				// Clean up default database
 				const defaultDbPath = path.join(process.cwd(), "data", "commands.db");
 				if (fs.existsSync(defaultDbPath)) {
@@ -140,8 +141,6 @@ describe("server entry point (index.ts)", () => {
 		});
 
 		it("creates database directory if it does not exist", async () => {
-			const { startServer } = await import("../index.js");
-
 			const nestedDir = path.join(tempDir, "nested", "deep", "path");
 			const dbPath = path.join(nestedDir, "test.db");
 			process.env.DATABASE_PATH = dbPath;
@@ -157,26 +156,23 @@ describe("server entry point (index.ts)", () => {
 				expect(fs.existsSync(nestedDir)).toBe(true);
 				expect(fs.existsSync(dbPath)).toBe(true);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 	});
 
 	describe("startup recovery", () => {
 		it("resets expired leases to PENDING on startup", async () => {
-			const { CommandDatabase } = await import("../store/database.js");
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "recovery.db");
 
 			// Pre-populate database with expired RUNNING command
-			const seedDb = new CommandDatabase(dbPath);
-			seedDb.createCommand("cmd-1", "DELAY", { ms: 5000 }, Date.now() - 60000);
+			const seedDb = createCommandDatabase(dbPath);
+			seedDb.createCommand("cmd-1", COMMAND_TYPE.DELAY, { ms: 5000 }, Date.now() - 60000);
 
 			// Claim the command (sets it to RUNNING)
 			const claimed = seedDb.claimCommand("agent-old", "lease-old", 1000, Date.now() - 60000);
 			expect(claimed).not.toBeNull();
-			expect(claimed!.status).toBe("RUNNING");
+			expect(claimed!.status).toBe(COMMAND_STATUS.RUNNING);
 
 			// Verify lease is expired
 			expect(claimed!.leaseExpiresAt).toBeLessThan(Date.now());
@@ -193,24 +189,21 @@ describe("server entry point (index.ts)", () => {
 				// Verify the command is now PENDING (recovered)
 				const command = db.getCommand("cmd-1");
 				expect(command).not.toBeNull();
-				expect(command!.status).toBe("PENDING");
+				expect(command!.status).toBe(COMMAND_STATUS.PENDING);
 				expect(command!.agentId).toBeNull();
 				expect(command!.leaseId).toBeNull();
 				expect(command!.leaseExpiresAt).toBeNull();
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 
 		it("logs recovery operation results", async () => {
-			const { CommandDatabase } = await import("../store/database.js");
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "recovery-log.db");
 
 			// Pre-populate with expired command
-			const seedDb = new CommandDatabase(dbPath);
-			seedDb.createCommand("cmd-1", "DELAY", { ms: 5000 }, Date.now() - 60000);
+			const seedDb = createCommandDatabase(dbPath);
+			seedDb.createCommand("cmd-1", COMMAND_TYPE.DELAY, { ms: 5000 }, Date.now() - 60000);
 			seedDb.claimCommand("agent-old", "lease-old", 1000, Date.now() - 60000);
 			seedDb.close();
 
@@ -229,24 +222,21 @@ describe("server entry point (index.ts)", () => {
 				);
 				expect(hasRecoveryLog).toBe(true);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 
 		it("keeps non-expired RUNNING commands unchanged", async () => {
-			const { CommandDatabase } = await import("../store/database.js");
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "no-recovery.db");
 
 			// Pre-populate with valid (non-expired) RUNNING command
-			const seedDb = new CommandDatabase(dbPath);
-			seedDb.createCommand("cmd-1", "DELAY", { ms: 5000 }, Date.now());
+			const seedDb = createCommandDatabase(dbPath);
+			seedDb.createCommand("cmd-1", COMMAND_TYPE.DELAY, { ms: 5000 }, Date.now());
 
 			// Claim with a lease that expires in the future
 			const claimed = seedDb.claimCommand("agent-active", "lease-active", 60000, Date.now());
 			expect(claimed).not.toBeNull();
-			expect(claimed!.status).toBe("RUNNING");
+			expect(claimed!.status).toBe(COMMAND_STATUS.RUNNING);
 			expect(claimed!.leaseExpiresAt).toBeGreaterThan(Date.now());
 
 			seedDb.close();
@@ -260,11 +250,11 @@ describe("server entry point (index.ts)", () => {
 				// Verify command is still RUNNING (not recovered)
 				const command = db.getCommand("cmd-1");
 				expect(command).not.toBeNull();
-				expect(command!.status).toBe("RUNNING");
+				expect(command!.status).toBe(COMMAND_STATUS.RUNNING);
 				expect(command!.agentId).toBe("agent-active");
 				expect(command!.leaseId).toBe("lease-active");
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 	});
@@ -276,7 +266,7 @@ describe("server entry point (index.ts)", () => {
 			try {
 				// Test POST /commands (create)
 				const createRes = await httpRequest(server, "POST", "/commands", {
-					type: "DELAY",
+					type: COMMAND_TYPE.DELAY,
 					payload: { ms: 1000 },
 				});
 
@@ -286,7 +276,7 @@ describe("server entry point (index.ts)", () => {
 				// Test GET /commands/:id
 				const getRes = await httpRequest(server, "GET", `/commands/${commandId}`);
 				expect(getRes.status).toBe(200);
-				expect((getRes.body as { status: string }).status).toBe("PENDING");
+				expect((getRes.body as { status: string }).status).toBe(COMMAND_STATUS.PENDING);
 
 				// Test POST /commands/claim
 				const claimRes = await httpRequest(server, "POST", "/commands/claim", {
@@ -297,7 +287,7 @@ describe("server entry point (index.ts)", () => {
 				expect(claimRes.status).toBe(200);
 				expect((claimRes.body as { commandId: string }).commandId).toBe(commandId);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 
@@ -308,7 +298,7 @@ describe("server entry point (index.ts)", () => {
 				const res = await httpRequest(server, "GET", "/nonexistent");
 				expect(res.status).toBe(404);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 	});
@@ -322,13 +312,11 @@ describe("server entry point (index.ts)", () => {
 				expect(address).not.toBeNull();
 				expect((address as { port: number }).port).toBe(4567);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 
 		it("uses default port 3000 when PORT is not set", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "default-port.db");
 			process.env.DATABASE_PATH = dbPath;
 			delete process.env.PORT;
@@ -340,7 +328,7 @@ describe("server entry point (index.ts)", () => {
 				expect(address).not.toBeNull();
 				expect((address as { port: number }).port).toBe(3000);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 
@@ -354,15 +342,13 @@ describe("server entry point (index.ts)", () => {
 				);
 				expect(hasStartupLog).toBe(true);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 	});
 
 	describe("graceful shutdown", () => {
 		it("handles SIGINT for graceful shutdown", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "sigint.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -390,8 +376,6 @@ describe("server entry point (index.ts)", () => {
 		});
 
 		it("handles SIGTERM for graceful shutdown", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "sigterm.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -419,8 +403,6 @@ describe("server entry point (index.ts)", () => {
 		});
 
 		it("closes database connection on shutdown", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "db-close.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -452,8 +434,6 @@ describe("server entry point (index.ts)", () => {
 
 	describe("error handling", () => {
 		it("exits with code 1 on database initialization failure", async () => {
-			const { startServer } = await import("../index.js");
-
 			// Use an invalid path that cannot be created (e.g., in /dev/null directory)
 			const invalidPath = "/dev/null/invalid/path/db.sqlite";
 			process.env.DATABASE_PATH = invalidPath;
@@ -466,8 +446,6 @@ describe("server entry point (index.ts)", () => {
 		});
 
 		it("exits with code 1 on port binding failure", async () => {
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "port-conflict.db");
 			process.env.DATABASE_PATH = dbPath;
 
@@ -512,16 +490,13 @@ describe("server entry point (index.ts)", () => {
 
 				expect(leaseCheckingCalls.length).toBe(0);
 			} finally {
-				closeTestServer(server, db);
+				await closeTestServer(server, db);
 			}
 		});
 	});
 
 	describe("startServer function contract", () => {
 		it("returns an object with app, server, and db properties", async () => {
-			// Import startServer directly to verify the returned object shape
-			const { startServer } = await import("../index.js");
-
 			const dbPath = path.join(tempDir, "contract.db");
 			process.env.DATABASE_PATH = dbPath;
 			process.env.PORT = "0";
@@ -539,7 +514,7 @@ describe("server entry point (index.ts)", () => {
 				expect(result.db).toHaveProperty("getCommand"); // Has database methods
 				expect(result.db).toHaveProperty("close");
 			} finally {
-				closeTestServer(result.server, result.db);
+				await closeTestServer(result.server, result.db);
 			}
 		});
 	});
