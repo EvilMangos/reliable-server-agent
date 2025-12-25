@@ -36,14 +36,14 @@ export const COMMAND_TYPE = {
  * - COMPLETED: Successfully completed
  * - FAILED: Execution failed
  */
-export type CommandStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+export type CommandStatus = (typeof COMMAND_STATUS)[keyof typeof COMMAND_STATUS];
 
 /**
  * Type of command to execute.
  * - DELAY: Wait for a specified duration
  * - HTTP_GET_JSON: Fetch JSON from a URL
  */
-export type CommandType = "DELAY" | "HTTP_GET_JSON";
+export type CommandType = (typeof COMMAND_TYPE)[keyof typeof COMMAND_TYPE];
 
 // =============================================================================
 // Command Payloads
