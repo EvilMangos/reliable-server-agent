@@ -172,7 +172,7 @@ export async function startAgent(options: {
 	fs.mkdirSync(options.stateDir, { recursive: true });
 
 	const args = [
-		"src/index.ts",
+		"src/cli.ts",
 		`--agent-id=${options.agentId}`,
 		`--server-url=${options.serverUrl}`,
 		`--state-dir=${options.stateDir}`,

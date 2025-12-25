@@ -5,18 +5,18 @@ import * as path from "path";
 import * as http from "http";
 import { fileURLToPath } from "url";
 import type { Container } from "inversify";
-import type { ServerInstance } from "./contracts/index.js";
+import type { ServerInstance } from "./contracts";
 import {
 	type ServerConfig,
 	TYPES,
 	createContainer,
 	disposeContainer,
-} from "./container/index.js";
-import type { CommandRepository } from "./contracts/index.js";
-import type { CommandService } from "./service/index.js";
-import { errorHandler } from "./routes/middleware/index.js";
+} from "./container";
+import type { CommandRepository } from "./contracts";
+import type { CommandService } from "./service";
+import { errorHandler } from "./routes/middleware";
 
-export type { ServerInstance } from "./contracts/index.js";
+export type { ServerInstance } from "./contracts";
 export {
 	Container,
 	createContainer,
@@ -28,7 +28,7 @@ export {
 	COMMAND_SERVICE,
 	COMMAND_ROUTER,
 	type ServerConfig,
-} from "./container/index.js";
+} from "./container";
 
 /**
  * Start the Control Server
@@ -42,7 +42,7 @@ export async function startServer(containerOverride?: Container): Promise<Server
 	// Read configuration from environment
 	const config: ServerConfig = {
 		databasePath: process.env.DATABASE_PATH || "./data/commands.db",
-		port: parseInt(process.env.PORT || "3000", 10) || 3000,
+		port: process.env.PORT !== undefined ? parseInt(process.env.PORT, 10) : 3000,
 	};
 
 	// Ensure database directory exists
@@ -82,7 +82,9 @@ export async function startServer(containerOverride?: Container): Promise<Server
 	// Start server with promise wrapper
 	const server = await new Promise<http.Server>((resolve, reject) => {
 		const httpServer = app.listen(port, () => {
-			console.log(`Server started on port ${port}`);
+			const address = httpServer.address();
+			const actualPort = typeof address === "object" && address ? address.port : port;
+			console.log(`Server started on port ${actualPort}`);
 			resolve(httpServer);
 		});
 

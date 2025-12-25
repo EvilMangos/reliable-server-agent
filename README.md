@@ -15,6 +15,7 @@ A fault-tolerant command execution system consisting of a **Control Server** and
 - [Agent CLI Options](#agent-cli-options)
 - [Testing](#testing)
 - [Trade-offs and Design Decisions](#trade-offs-and-design-decisions)
+- [Docker](#docker)
 
 ## Overview
 
@@ -44,6 +45,7 @@ packages/
   server/   # Control Server - Express + SQLite
   agent/    # Agent - Claims work, executes, reports
   shared/   # Shared types, DTOs, constants
+  e2e/      # End-to-end tests - Black-box integration tests
 ```
 
 ### High-Level Flow
@@ -394,6 +396,9 @@ pnpm test:watch
 
 # Run tests with coverage
 pnpm test:coverage
+
+# Run end-to-end tests
+pnpm test:e2e
 ```
 
 ### Test Coverage
@@ -415,6 +420,10 @@ The test suite covers:
   - Command routing to correct executor
   - Server unavailability handling
   - Lease validity during execution
+
+- **End-to-End Tests:**
+  - Black-box integration tests for crash recovery
+  - Server and agent interaction via child processes
 
 ## Trade-offs and Design Decisions
 
@@ -467,6 +476,25 @@ The test suite covers:
 - (+) Client can inspect failure and decide retry strategy
 - (-) No built-in retry with backoff
 - (-) Requires external orchestration for automatic retries
+
+## Docker
+
+The system includes Docker support for containerized deployment.
+
+### Running with Docker Compose
+
+```bash
+# Build and start both server and agent
+docker compose up --build
+
+# Run in detached mode
+docker compose up -d --build
+
+# Stop the system
+docker compose down
+```
+
+The server is available at `http://localhost:3000` once healthy.
 
 ## License
 

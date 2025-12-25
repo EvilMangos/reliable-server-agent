@@ -27,13 +27,12 @@ We intentionally use a **pull-based queue** implemented by the server:
 Monorepo with pnpm workspaces:
 
 ```
-
 packages/
-├── server/   # Control Server - Express-based HTTP API + SQLite persistence
 ├── agent/    # Agent - Pulls work, executes, heartbeats, reports results
+├── e2e/      # End-to-end tests - Black-box integration tests for crash recovery
+├── server/   # Control Server - Express-based HTTP API + SQLite persistence
 └── shared/   # Shared types, DTOs, constants
-
-````
+```
 
 ### High-Level Flow
 
