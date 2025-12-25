@@ -10,6 +10,7 @@ const LOG_LEVELS = {
 	info: 1,
 	warn: 2,
 	error: 3,
+	silent: 4,
 } as const;
 
 type LogLevel = keyof typeof LOG_LEVELS;
