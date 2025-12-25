@@ -14,6 +14,7 @@ import {
 } from "./container/index.js";
 import type { CommandRepository } from "./contracts/index.js";
 import type { CommandService } from "./service/index.js";
+import { errorHandler } from "./routes/middleware/index.js";
 
 export type { ServerInstance } from "./contracts/index.js";
 export {
@@ -71,6 +72,9 @@ export async function startServer(containerOverride?: Container): Promise<Server
 
 	// Mount command routes
 	app.use("/commands", commandRoutes);
+
+	// Error handling middleware (must be last)
+	app.use(errorHandler);
 
 	// Resolve port from container config
 	const port = container.get<ServerConfig>(TYPES.Config).port;

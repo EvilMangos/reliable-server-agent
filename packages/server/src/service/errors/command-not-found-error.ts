@@ -5,6 +5,6 @@ import { ServiceError } from "./service-error.js";
  */
 export class CommandNotFoundError extends ServiceError {
 	constructor(commandId: string) {
-		super(`Command not found: ${commandId}`);
+		super(`Command not found: ${commandId}`, 404);
 	}
 }

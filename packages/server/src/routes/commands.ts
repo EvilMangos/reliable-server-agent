@@ -4,57 +4,45 @@ import type {
 	ClaimCommandResponse,
 	CompleteRequest,
 	CreateCommandRequest,
-	CreateCommandResponse,
 	FailRequest,
 	GetCommandResponse,
 	HeartbeatRequest,
 } from "@reliable-server-agent/shared";
 import type { CommandService } from "../service/index.js";
-import {
-	CommandNotFoundError,
-	InvalidCommandTypeError,
-	InvalidPayloadError,
-	LeaseConflictError,
-} from "../service/index.js";
-import { sendInternalError, sendLeaseConflict, validateLeaseRequest } from "./utils/index.js";
+import { asyncHandler } from "./middleware/index.js";
+import { ValidationError } from "./errors/index.js";
+import { requireLeaseRequest, requireNumber, requireString } from "./utils/index.js";
 
 /**
  * Create command routes using the service layer
+ *
+ * All handlers use asyncHandler wrapper which forwards errors to the
+ * centralized error middleware. Validation errors throw ValidationError,
+ * and service errors are propagated directly.
  */
 export function createCommandRoutes(service: CommandService): Router {
 	const router = Router();
 
 	// POST /commands - Create a new command
-	router.post("/", (req: Request, res: Response): void => {
-		const body = req.body as CreateCommandRequest;
+	router.post(
+		"/",
+		asyncHandler((req: Request, res: Response) => {
+			const { type, payload } = req.body as CreateCommandRequest;
 
-		if (!body.type || !body.payload) {
-			res.status(400).json({ error: "Missing type or payload" });
-			return;
-		}
+			if (!type || !payload) {
+				throw new ValidationError("Missing type or payload");
+			}
 
-		try {
-			const commandId = service.createCommand(body.type, body.payload);
-			const response: CreateCommandResponse = { commandId };
-			res.status(201).json(response);
-		} catch (error) {
-			if (error instanceof InvalidCommandTypeError) {
-				res.status(400).json({ error: "Invalid command type" });
-				return;
-			}
-			if (error instanceof InvalidPayloadError) {
-				res.status(400).json({ error: error.message });
-				return;
-			}
-			sendInternalError(res, "create command", error);
-		}
-	});
+			const commandId = service.createCommand(type, payload);
+			res.status(201).json({ commandId });
+		}),
+	);
 
 	// GET /commands/:id - Get command status and result
-	router.get("/:id", (req: Request, res: Response): void => {
-		const { id } = req.params;
-
-		try {
+	router.get(
+		"/:id",
+		asyncHandler((req: Request, res: Response) => {
+			const { id } = req.params;
 			const command = service.getCommand(id);
 
 			const response: GetCommandResponse = {
@@ -70,26 +58,18 @@ export function createCommandRoutes(service: CommandService): Router {
 			}
 
 			res.json(response);
-		} catch (error) {
-			if (error instanceof CommandNotFoundError) {
-				res.status(404).json({ error: "Command not found" });
-				return;
-			}
-			sendInternalError(res, "get command", error);
-		}
-	});
+		}),
+	);
 
 	// POST /commands/claim - Agent claims a command
-	router.post("/claim", (req: Request, res: Response): void => {
-		const body = req.body as Partial<ClaimCommandRequest>;
+	router.post(
+		"/claim",
+		asyncHandler((req: Request, res: Response) => {
+			const body = req.body as Partial<ClaimCommandRequest>;
+			const agentId = requireString(body, "agentId");
+			const maxLeaseMs = requireNumber(body, "maxLeaseMs");
 
-		if (!body.agentId || typeof body.maxLeaseMs !== "number") {
-			res.status(400).json({ error: "Missing agentId or maxLeaseMs" });
-			return;
-		}
-
-		try {
-			const claim = service.claimNextCommand(body.agentId, body.maxLeaseMs);
+			const claim = service.claimNextCommand(agentId, maxLeaseMs);
 
 			if (!claim) {
 				res.status(204).send();
@@ -107,79 +87,55 @@ export function createCommandRoutes(service: CommandService): Router {
 			};
 
 			res.json(response);
-		} catch (error) {
-			sendInternalError(res, "claim command", error);
-		}
-	});
+		}),
+	);
 
 	// POST /commands/:id/heartbeat - Extend lease
-	router.post("/:id/heartbeat", (req: Request, res: Response): void => {
-		const { id } = req.params;
-		const leaseRequest = validateLeaseRequest(req.body);
-		const body = req.body as Partial<HeartbeatRequest>;
+	router.post(
+		"/:id/heartbeat",
+		asyncHandler((req: Request, res: Response) => {
+			const { id } = req.params;
+			const { agentId, leaseId } = requireLeaseRequest(req.body);
+			const extendMs = requireNumber(req.body as HeartbeatRequest, "extendMs");
 
-		if (!leaseRequest || typeof body.extendMs !== "number") {
-			res.status(400).json({ error: "Missing agentId, leaseId, or extendMs" });
-			return;
-		}
-
-		try {
-			service.recordHeartbeat(id, leaseRequest.agentId, leaseRequest.leaseId, body.extendMs);
+			service.recordHeartbeat(id, agentId, leaseId, extendMs);
 			res.status(204).send();
-		} catch (error) {
-			if (error instanceof LeaseConflictError) {
-				sendLeaseConflict(res);
-				return;
-			}
-			sendInternalError(res, "heartbeat", error);
-		}
-	});
+		}),
+	);
 
 	// POST /commands/:id/complete - Complete command with result
-	router.post("/:id/complete", (req: Request, res: Response): void => {
-		const { id } = req.params;
-		const leaseRequest = validateLeaseRequest(req.body);
-		const body = req.body as CompleteRequest;
+	router.post(
+		"/:id/complete",
+		asyncHandler((req: Request, res: Response) => {
+			const { id } = req.params;
+			const { agentId, leaseId } = requireLeaseRequest(req.body);
+			const body = req.body as CompleteRequest;
 
-		if (!leaseRequest || !body.result) {
-			res.status(400).json({ error: "Missing agentId, leaseId, or result" });
-			return;
-		}
-
-		try {
-			service.completeCommand(id, leaseRequest.agentId, leaseRequest.leaseId, body.result);
-			res.status(204).send();
-		} catch (error) {
-			if (error instanceof LeaseConflictError) {
-				sendLeaseConflict(res);
-				return;
+			if (!body.result) {
+				throw new ValidationError("Missing agentId, leaseId, or result");
 			}
-			sendInternalError(res, "complete command", error);
-		}
-	});
+
+			service.completeCommand(id, agentId, leaseId, body.result);
+			res.status(204).send();
+		}),
+	);
 
 	// POST /commands/:id/fail - Fail command with error
-	router.post("/:id/fail", (req: Request, res: Response): void => {
-		const { id } = req.params;
-		const leaseRequest = validateLeaseRequest(req.body);
-		const body = req.body as FailRequest;
+	router.post(
+		"/:id/fail",
+		asyncHandler((req: Request, res: Response) => {
+			const { id } = req.params;
+			const { agentId, leaseId } = requireLeaseRequest(req.body);
+			const body = req.body as FailRequest;
 
-		if (!leaseRequest || !body.error) {
-			res.status(400).json({ error: "Missing agentId, leaseId, or error" });
-			return;
-		}
-
-		try {
-			service.failCommand(id, leaseRequest.agentId, leaseRequest.leaseId, body.error, body.result);
-			res.status(204).send();
-		} catch (error) {
-			if (error instanceof LeaseConflictError) {
-				sendLeaseConflict(res);
-				return;
+			if (!body.error) {
+				throw new ValidationError("Missing agentId, leaseId, or error");
 			}
-			sendInternalError(res, "fail command", error);
-		}
-	});
+
+			service.failCommand(id, agentId, leaseId, body.error, body.result);
+			res.status(204).send();
+		}),
+	);
 
 	return router;
 }

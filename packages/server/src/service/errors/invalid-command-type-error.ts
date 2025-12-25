@@ -5,6 +5,6 @@ import { ServiceError } from "./service-error.js";
  */
 export class InvalidCommandTypeError extends ServiceError {
 	constructor(type: string) {
-		super(`Invalid command type: ${type}`);
+		super(`Invalid command type: ${type}`, 400);
 	}
 }

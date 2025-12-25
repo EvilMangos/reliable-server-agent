@@ -5,6 +5,6 @@ import { ServiceError } from "./service-error.js";
  */
 export class InvalidPayloadError extends ServiceError {
 	constructor(message: string) {
-		super(`Invalid payload: ${message}`);
+		super(`Invalid payload: ${message}`, 400);
 	}
 }
