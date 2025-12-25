@@ -18,8 +18,8 @@ import {
 	createDefaultAgentConfig,
 	createMockLogger,
 	createTempDir,
-} from "./test-utils";
-import { ServerClientImpl } from "../server-client";
+} from "./test-utils.js";
+import { ServerClientImpl } from "../server-client.js";
 
 describe("ServerClientImpl", () => {
 	let fetchContext: FetchMockContext;
@@ -81,7 +81,7 @@ describe("ServerClientImpl", () => {
 			const success = await client.fail("cmd-with-result", "lease-789", "Partial failure", partialResult);
 
 			expect(success).toBe(true);
-			expect(capturedBody?.result).toEqual(partialResult);
+			expect((capturedBody as Record<string, unknown> | null)?.result).toEqual(partialResult);
 		});
 
 		it("returns true when server responds with 204", async () => {

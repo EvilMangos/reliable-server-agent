@@ -3,8 +3,8 @@
  * This module handles command-line execution of the agent.
  */
 
-import { loadConfig } from "./config";
-import { createAgent } from "./di";
+import { loadConfig } from "./config/index.js";
+import { createAgent } from "./di/index.js";
 
 /**
  * Check if this module is being run directly (as CLI entry point).

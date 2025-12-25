@@ -18,7 +18,7 @@ import {
 	setupFakeTimers,
 	teardownFakeTimers,
 	withMockedRandom,
-} from "./test-utils";
+} from "./test-utils.js";
 
 describe("DELAY Executor", () => {
 	beforeEach(() => {

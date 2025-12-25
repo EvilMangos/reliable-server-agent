@@ -1,5 +1,5 @@
-import type { Logger } from "../types";
-import { LOG_LEVELS, type LogLevel, getCurrentLevel } from "./log-level";
+import type { Logger } from "../types/index.js";
+import { LOG_LEVELS, type LogLevel, getCurrentLevel } from "./log-level.js";
 
 function formatTimestamp(): string {
 	return new Date().toISOString();

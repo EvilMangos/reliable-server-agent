@@ -1,7 +1,7 @@
-import type { HeartbeatManager } from "./types";
-import type { ServerClient } from "./types";
-import type { Logger } from "./types";
-import { LoggerImpl } from "./logger";
+import type { HeartbeatManager } from "./types/index.js";
+import type { ServerClient } from "./types/index.js";
+import type { Logger } from "./types/index.js";
+import { LoggerImpl } from "./logger/index.js";
 
 /**
  * Heartbeat manager implementation for maintaining command leases.

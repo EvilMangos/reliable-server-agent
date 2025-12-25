@@ -64,6 +64,14 @@ COPY --from=builder /app/packages/agent/package.json ./packages/agent/
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/agent/dist ./packages/agent/dist
 
+# Copy @reliable-server-agent/shared package to agent's node_modules
+# pnpm creates symlinks that don't work after Docker COPY, so we replace them
+RUN rm -rf /app/packages/agent/node_modules/@reliable-server-agent/shared && \
+    mkdir -p /app/packages/agent/node_modules/@reliable-server-agent/shared && \
+    cp /app/packages/shared/package.json /app/packages/agent/node_modules/@reliable-server-agent/shared/ && \
+    cp -r /app/packages/shared/dist /app/packages/agent/node_modules/@reliable-server-agent/shared/ && \
+    chmod -R a+r /app/packages/agent/node_modules/@reliable-server-agent/shared
+
 # Create state directory for agent journal with correct ownership
 RUN mkdir -p /app/.agent-state && chown -R appuser:appgroup /app/.agent-state
 
@@ -75,5 +83,5 @@ ENV NODE_ENV=production \
     SERVER_URL=http://localhost:3000 \
     AGENT_STATE_DIR=/app/.agent-state
 
-# Start the agent
-CMD ["node", "packages/agent/dist/index.js"]
+# Start the agent using the CLI entry point
+CMD ["node", "packages/agent/dist/cli.js"]

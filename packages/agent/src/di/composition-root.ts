@@ -5,14 +5,14 @@
 
 import "reflect-metadata";
 import { COMMAND_TYPE } from "@reliable-server-agent/shared";
-import type { AgentConfig } from "../types";
-import { AgentImpl } from "../agent";
-import { HeartbeatManagerImpl } from "../heartbeat";
-import { JournalManagerImpl } from "../journal";
-import { LoggerImpl } from "../logger";
-import { ServerClientImpl } from "../server-client";
-import { DelayExecutor, HttpGetJsonExecutor } from "../executors";
-import { type Container, createContainer } from "./container";
+import type { AgentConfig } from "../types/index.js";
+import { AgentImpl } from "../agent.js";
+import { HeartbeatManagerImpl } from "../heartbeat.js";
+import { JournalManagerImpl } from "../journal.js";
+import { LoggerImpl } from "../logger/index.js";
+import { ServerClientImpl } from "../server-client.js";
+import { DelayExecutor, HttpGetJsonExecutor } from "../executors/index.js";
+import { type Container, createContainer } from "./container.js";
 import {
 	AGENT,
 	CONFIG,
@@ -25,7 +25,7 @@ import {
 	type LoggerFactory,
 	RANDOM_FAILURE_CALLBACK,
 	SERVER_CLIENT,
-} from "./tokens";
+} from "./tokens.js";
 
 /**
  * Configure all dependencies in the container.

@@ -2,8 +2,8 @@
  * Default configuration values for the agent.
  */
 
-import type { AgentConfig } from "../types";
-import { generateAgentId } from "./agent-id";
+import type { AgentConfig } from "../types/index.js";
+import { generateAgentId } from "./agent-id.js";
 
 export function getDefaultConfig(): AgentConfig {
 	return {

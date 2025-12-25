@@ -12,7 +12,7 @@ import type {
 	JournalManager,
 	Logger,
 	ServerClient,
-} from "../types";
+} from "../types/index.js";
 
 /**
  * Token type for identifying dependencies in the container.

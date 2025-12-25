@@ -1,6 +1,6 @@
 import type { DelayPayload, DelayResult } from "@reliable-server-agent/shared";
-import type { Executor, ExecutorContext, JournalManager, Logger } from "../types";
-import { RANDOM_FAILURE_PROBABILITY } from "../constants";
+import type { Executor, ExecutorContext, JournalManager, Logger } from "../types/index.js";
+import { RANDOM_FAILURE_PROBABILITY } from "../constants.js";
 
 /**
  * Interval between lease validity checks during delay waiting.

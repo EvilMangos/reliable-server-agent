@@ -5,8 +5,8 @@
 // Re-export reflect-metadata to ensure it's loaded
 import "reflect-metadata";
 
-export { ContainerImpl, createContainer, type Container, type Factory, type Lifecycle } from "./container";
-export { createToken, type Token } from "./tokens";
+export { ContainerImpl, createContainer, type Container, type Factory, type Lifecycle } from "./container.js";
+export { createToken, type Token } from "./tokens.js";
 export {
 	AGENT,
 	CONFIG,
@@ -20,5 +20,5 @@ export {
 	TOKENS,
 	type ExecutorRegistry,
 	type LoggerFactory,
-} from "./tokens";
-export { configureContainer, createAgent, createAgentContainer } from "./composition-root";
+} from "./tokens.js";
+export { configureContainer, createAgent, createAgentContainer } from "./composition-root.js";

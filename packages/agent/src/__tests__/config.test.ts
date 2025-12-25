@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfigFresh } from "./test-utils";
+import { loadConfigFresh } from "./test-utils.js";
 
 describe("Agent Config", () => {
 	const originalEnv = process.env;

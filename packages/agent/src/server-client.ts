@@ -6,11 +6,11 @@ import type {
 	FailRequest,
 	HeartbeatRequest,
 } from "@reliable-server-agent/shared";
-import type { AgentConfig } from "./types";
-import type { ServerClient } from "./types";
-import type { Logger } from "./types";
-import { LoggerImpl } from "./logger";
-import { formatError } from "./utils";
+import type { AgentConfig } from "./types/index.js";
+import type { ServerClient } from "./types/index.js";
+import type { Logger } from "./types/index.js";
+import { LoggerImpl } from "./logger/index.js";
+import { formatError } from "./utils/index.js";
 
 /**
  * Multiplier applied to heartbeat interval to compute lease extension.

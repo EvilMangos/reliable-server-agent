@@ -5,18 +5,18 @@ import * as path from "path";
 import * as http from "http";
 import { fileURLToPath } from "url";
 import type { Container } from "inversify";
-import type { ServerInstance } from "./contracts";
+import type { ServerInstance } from "./contracts/index.js";
 import {
 	type ServerConfig,
 	TYPES,
 	createContainer,
 	disposeContainer,
-} from "./container";
-import type { CommandRepository } from "./contracts";
-import type { CommandService } from "./service";
-import { errorHandler } from "./routes/middleware";
+} from "./container/index.js";
+import type { CommandRepository } from "./contracts/index.js";
+import type { CommandService } from "./service/index.js";
+import { errorHandler } from "./routes/middleware/index.js";
 
-export type { ServerInstance } from "./contracts";
+export type { ServerInstance } from "./contracts/index.js";
 export {
 	Container,
 	createContainer,
@@ -28,7 +28,7 @@ export {
 	COMMAND_SERVICE,
 	COMMAND_ROUTER,
 	type ServerConfig,
-} from "./container";
+} from "./container/index.js";
 
 /**
  * Start the Control Server

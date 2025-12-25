@@ -5,14 +5,14 @@ import type {
 	DelayResult,
 } from "@reliable-server-agent/shared";
 import { COMMAND_TYPE } from "@reliable-server-agent/shared";
-import type { Agent, AgentConfig, HeartbeatManager, JournalManager, Logger, ServerClient } from "./types";
-import type { ExecutorRegistry } from "./di";
-import { HeartbeatManagerImpl } from "./heartbeat";
-import { JournalManagerImpl } from "./journal";
-import { LoggerImpl } from "./logger";
-import { formatError, sleep } from "./utils";
-import { ServerClientImpl } from "./server-client";
-import { DelayExecutor, HttpGetJsonExecutor } from "./executors";
+import type { Agent, AgentConfig, HeartbeatManager, JournalManager, Logger, ServerClient } from "./types/index.js";
+import type { ExecutorRegistry } from "./di/index.js";
+import { HeartbeatManagerImpl } from "./heartbeat.js";
+import { JournalManagerImpl } from "./journal.js";
+import { LoggerImpl } from "./logger/index.js";
+import { formatError, sleep } from "./utils/index.js";
+import { ServerClientImpl } from "./server-client.js";
+import { DelayExecutor, HttpGetJsonExecutor } from "./executors/index.js";
 
 /**
  * Agent implementation that polls for work and executes commands.

@@ -24,8 +24,8 @@ import {
 	createTestHttpExecutor,
 	createTestJournal,
 	withMockedRandom,
-} from "./test-utils";
-import { HttpGetJsonExecutor } from "../executors";
+} from "./test-utils.js";
+import { HttpGetJsonExecutor } from "../executors/index.js";
 
 describe("HTTP_GET_JSON Executor", () => {
 	let fetchContext: FetchMockContext;

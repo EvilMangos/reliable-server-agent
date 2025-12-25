@@ -4,7 +4,7 @@
 
 import "reflect-metadata";
 import { Container as InversifyContainer } from "inversify";
-import type { Token } from "./tokens";
+import type { Token } from "./tokens.js";
 
 /**
  * Factory function type for creating instances.

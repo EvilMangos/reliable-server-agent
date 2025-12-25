@@ -11,10 +11,10 @@ import {
 	createAgentContainer,
 	createContainer,
 	createToken,
-} from "../di";
-import type { Container } from "../di";
-import type { AgentConfig } from "../types";
-import { cleanupTempDir, createDefaultAgentConfig, createTempDir, createUniqueTokenName } from "./test-utils";
+} from "../di/index.js";
+import type { Container } from "../di/index.js";
+import type { AgentConfig } from "../types/index.js";
+import { cleanupTempDir, createDefaultAgentConfig, createTempDir, createUniqueTokenName } from "./test-utils.js";
 
 describe("DI Container", () => {
 	let container: Container;

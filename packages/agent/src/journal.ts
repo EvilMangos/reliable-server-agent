@@ -1,11 +1,11 @@
 import type { AgentJournal, CommandType, HttpGetJsonResult, JournalStage } from "@reliable-server-agent/shared";
-import type { JournalManager } from "./types";
-import type { Logger } from "./types";
+import type { JournalManager } from "./types/index.js";
+import type { Logger } from "./types/index.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { LoggerImpl } from "./logger";
-import { formatError } from "./utils";
+import { LoggerImpl } from "./logger/index.js";
+import { formatError } from "./utils/index.js";
 
 /**
  * Journal manager implementation for persisting agent state.

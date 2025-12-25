@@ -14,8 +14,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentJournal, ClaimCommandResponse } from "@reliable-server-agent/shared";
 import { COMMAND_TYPE } from "@reliable-server-agent/shared";
-import type { AgentConfig, JournalManager, Logger } from "../types";
-import { DelayExecutor, HttpGetJsonExecutor } from "../executors";
+import type { AgentConfig, JournalManager, Logger } from "../types/index.js";
+import { DelayExecutor, HttpGetJsonExecutor } from "../executors/index.js";
 
 // =============================================================================
 // Temp Directory Management

@@ -1,7 +1,7 @@
 import type { HttpGetJsonPayload, HttpGetJsonResult } from "@reliable-server-agent/shared";
 import { HTTP_BODY_MAX_CHARS, HTTP_REQUEST_TIMEOUT_MS } from "@reliable-server-agent/shared";
-import type { Executor, ExecutorContext, JournalManager, Logger } from "../types";
-import { RANDOM_FAILURE_PROBABILITY } from "../constants";
+import type { Executor, ExecutorContext, JournalManager, Logger } from "../types/index.js";
+import { RANDOM_FAILURE_PROBABILITY } from "../constants.js";
 
 /**
  * Executor for HTTP_GET_JSON commands.

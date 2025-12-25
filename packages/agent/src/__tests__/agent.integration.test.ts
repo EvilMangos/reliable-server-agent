@@ -34,7 +34,7 @@ import {
 	setupFakeTimers,
 	teardownFakeTimers,
 	writeJournalFile,
-} from "./test-utils";
+} from "./test-utils.js";
 import { AgentImpl } from "../index.js";
 
 describe("Agent Integration", () => {

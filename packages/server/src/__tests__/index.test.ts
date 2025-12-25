@@ -6,7 +6,7 @@ import { COMMAND_STATUS, COMMAND_TYPE } from "@reliable-server-agent/shared";
 import { httpRequest } from "./support/http-test-client.js";
 import { closeTestServer, createTestServer } from "./support/server-test-fixture.js";
 import { startServer } from "../index.js";
-import { createCommandDatabase } from "../store";
+import { createCommandDatabase } from "../store/index.js";
 
 /**
  * Tests for server entry point (index.ts)

@@ -68,6 +68,14 @@ COPY --from=builder /app/packages/server/package.json ./packages/server/
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/server/dist ./packages/server/dist
 
+# Copy @reliable-server-agent/shared package to server's node_modules
+# pnpm creates symlinks that don't work after Docker COPY, so we replace them
+RUN rm -rf /app/packages/server/node_modules/@reliable-server-agent/shared && \
+    mkdir -p /app/packages/server/node_modules/@reliable-server-agent/shared && \
+    cp /app/packages/shared/package.json /app/packages/server/node_modules/@reliable-server-agent/shared/ && \
+    cp -r /app/packages/shared/dist /app/packages/server/node_modules/@reliable-server-agent/shared/ && \
+    chmod -R a+r /app/packages/server/node_modules/@reliable-server-agent/shared
+
 # Create data directory for SQLite database with correct ownership
 RUN mkdir -p /app/data && chown -R appuser:appgroup /app/data
 

@@ -3,5 +3,5 @@
  * Re-exports from container and tokens for backward compatibility.
  */
 
-export type { Container, Factory, Lifecycle } from "./container";
-export { createToken, type Token } from "./tokens";
+export type { Container, Factory, Lifecycle } from "./container.js";
+export { createToken, type Token } from "./tokens.js";

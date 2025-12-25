@@ -5,10 +5,10 @@
  * Priority: CLI > Environment > Defaults
  */
 
-import type { AgentConfig } from "../types";
-import { parseCliArgs } from "./cli-parser";
-import { getDefaultConfig } from "./defaults";
-import { parseEnvVars } from "./env-parser";
+import type { AgentConfig } from "../types/index.js";
+import { parseCliArgs } from "./cli-parser.js";
+import { getDefaultConfig } from "./defaults.js";
+import { parseEnvVars } from "./env-parser.js";
 
 /**
  * Load agent configuration from CLI arguments, environment variables, and defaults.

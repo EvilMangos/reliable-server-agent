@@ -14,12 +14,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentJournal } from "@reliable-server-agent/shared";
 import { COMMAND_TYPE } from "@reliable-server-agent/shared";
-import { JournalManagerImpl } from "../journal";
+import { JournalManagerImpl } from "../journal.js";
 import {
 	cleanupTempDir,
 	createMockLogger,
 	createTempDir,
-} from "./test-utils";
+} from "./test-utils.js";
 
 describe("JournalManagerImpl", () => {
 	let tempDir: string;
