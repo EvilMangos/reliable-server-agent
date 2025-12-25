@@ -1,9 +1,7 @@
 import { type Request, type Response, Router } from "express";
-import { randomUUID } from "crypto";
 import type {
 	ClaimCommandRequest,
 	ClaimCommandResponse,
-	CommandPayload,
 	CompleteRequest,
 	CreateCommandRequest,
 	CreateCommandResponse,
@@ -11,16 +9,23 @@ import type {
 	GetCommandResponse,
 	HeartbeatRequest,
 } from "@reliable-server-agent/shared";
-import type { CommandDatabase } from "../store/database.js";
+import type { CommandService } from "../service/index.js";
+import {
+	CommandNotFoundError,
+	InvalidCommandTypeError,
+	InvalidPayloadError,
+	LeaseConflictError,
+} from "../service/index.js";
+import { sendInternalError, sendLeaseConflict, validateLeaseRequest } from "./utils/index.js";
 
 /**
- * Create command routes
+ * Create command routes using the service layer
  */
-export function createCommandRoutes(db: CommandDatabase): Router {
+export function createCommandRoutes(service: CommandService): Router {
 	const router = Router();
 
 	// POST /commands - Create a new command
-	router.post("/", (req: Request, res: Response) => {
+	router.post("/", (req: Request, res: Response): void => {
 		const body = req.body as CreateCommandRequest;
 
 		if (!body.type || !body.payload) {
@@ -28,161 +33,151 @@ export function createCommandRoutes(db: CommandDatabase): Router {
 			return;
 		}
 
-		if (body.type !== "DELAY" && body.type !== "HTTP_GET_JSON") {
-			res.status(400).json({ error: "Invalid command type" });
-			return;
-		}
-
-		const commandId = randomUUID();
-		const now = Date.now();
-
 		try {
-			db.createCommand(commandId, body.type, body.payload, now);
+			const commandId = service.createCommand(body.type, body.payload);
 			const response: CreateCommandResponse = { commandId };
 			res.status(201).json(response);
 		} catch (error) {
-			console.error("Failed to create command:", error);
-			res.status(500).json({ error: "Failed to create command" });
+			if (error instanceof InvalidCommandTypeError) {
+				res.status(400).json({ error: "Invalid command type" });
+				return;
+			}
+			if (error instanceof InvalidPayloadError) {
+				res.status(400).json({ error: error.message });
+				return;
+			}
+			sendInternalError(res, "create command", error);
 		}
 	});
 
 	// GET /commands/:id - Get command status and result
-	router.get("/:id", (req: Request, res: Response) => {
+	router.get("/:id", (req: Request, res: Response): void => {
 		const { id } = req.params;
 
-		const command = db.getCommand(id);
-		if (!command) {
-			res.status(404).json({ error: "Command not found" });
-			return;
+		try {
+			const command = service.getCommand(id);
+
+			const response: GetCommandResponse = {
+				status: command.status,
+			};
+
+			if (command.result) {
+				response.result = command.result;
+			}
+
+			if (command.agentId) {
+				response.agentId = command.agentId;
+			}
+
+			res.json(response);
+		} catch (error) {
+			if (error instanceof CommandNotFoundError) {
+				res.status(404).json({ error: "Command not found" });
+				return;
+			}
+			sendInternalError(res, "get command", error);
 		}
-
-		const response: GetCommandResponse = {
-			status: command.status,
-		};
-
-		if (command.resultJson) {
-			response.result = JSON.parse(command.resultJson);
-		}
-
-		if (command.agentId) {
-			response.agentId = command.agentId;
-		}
-
-		res.json(response);
 	});
 
 	// POST /commands/claim - Agent claims a command
-	router.post("/claim", (req: Request, res: Response) => {
-		const body = req.body as ClaimCommandRequest;
+	router.post("/claim", (req: Request, res: Response): void => {
+		const body = req.body as Partial<ClaimCommandRequest>;
 
 		if (!body.agentId || typeof body.maxLeaseMs !== "number") {
 			res.status(400).json({ error: "Missing agentId or maxLeaseMs" });
 			return;
 		}
 
-		const leaseId = randomUUID();
-		const now = Date.now();
-
 		try {
-			const command = db.claimCommand(body.agentId, leaseId, body.maxLeaseMs, now);
+			const claim = service.claimNextCommand(body.agentId, body.maxLeaseMs);
 
-			if (!command) {
+			if (!claim) {
 				res.status(204).send();
 				return;
 			}
 
-			const payload = JSON.parse(command.payloadJson) as CommandPayload;
 			const response: ClaimCommandResponse = {
-				commandId: command.id,
-				type: command.type,
-				payload,
-				leaseId: command.leaseId!,
-				leaseExpiresAt: command.leaseExpiresAt!,
-				startedAt: command.startedAt!,
-				scheduledEndAt: command.scheduledEndAt,
+				commandId: claim.commandId,
+				type: claim.type,
+				payload: claim.payload,
+				leaseId: claim.leaseId,
+				leaseExpiresAt: claim.leaseExpiresAt,
+				startedAt: claim.startedAt,
+				scheduledEndAt: claim.scheduledEndAt,
 			};
 
 			res.json(response);
 		} catch (error) {
-			console.error("Failed to claim command:", error);
-			res.status(500).json({ error: "Failed to claim command" });
+			sendInternalError(res, "claim command", error);
 		}
 	});
 
 	// POST /commands/:id/heartbeat - Extend lease
-	router.post("/:id/heartbeat", (req: Request, res: Response) => {
+	router.post("/:id/heartbeat", (req: Request, res: Response): void => {
 		const { id } = req.params;
-		const body = req.body as HeartbeatRequest;
+		const leaseRequest = validateLeaseRequest(req.body);
+		const body = req.body as Partial<HeartbeatRequest>;
 
-		if (!body.agentId || !body.leaseId || typeof body.extendMs !== "number") {
+		if (!leaseRequest || typeof body.extendMs !== "number") {
 			res.status(400).json({ error: "Missing agentId, leaseId, or extendMs" });
 			return;
 		}
 
-		const now = Date.now();
-
 		try {
-			const success = db.heartbeat(id, body.agentId, body.leaseId, body.extendMs, now);
-
-			if (!success) {
-				res.status(409).json({ error: "Lease is not current" });
-				return;
-			}
-
+			service.recordHeartbeat(id, leaseRequest.agentId, leaseRequest.leaseId, body.extendMs);
 			res.status(204).send();
 		} catch (error) {
-			console.error("Failed to heartbeat:", error);
-			res.status(500).json({ error: "Failed to heartbeat" });
+			if (error instanceof LeaseConflictError) {
+				sendLeaseConflict(res);
+				return;
+			}
+			sendInternalError(res, "heartbeat", error);
 		}
 	});
 
 	// POST /commands/:id/complete - Complete command with result
-	router.post("/:id/complete", (req: Request, res: Response) => {
+	router.post("/:id/complete", (req: Request, res: Response): void => {
 		const { id } = req.params;
+		const leaseRequest = validateLeaseRequest(req.body);
 		const body = req.body as CompleteRequest;
 
-		if (!body.agentId || !body.leaseId || !body.result) {
+		if (!leaseRequest || !body.result) {
 			res.status(400).json({ error: "Missing agentId, leaseId, or result" });
 			return;
 		}
 
 		try {
-			const success = db.completeCommand(id, body.agentId, body.leaseId, body.result);
-
-			if (!success) {
-				res.status(409).json({ error: "Lease is not current" });
-				return;
-			}
-
+			service.completeCommand(id, leaseRequest.agentId, leaseRequest.leaseId, body.result);
 			res.status(204).send();
 		} catch (error) {
-			console.error("Failed to complete command:", error);
-			res.status(500).json({ error: "Failed to complete command" });
+			if (error instanceof LeaseConflictError) {
+				sendLeaseConflict(res);
+				return;
+			}
+			sendInternalError(res, "complete command", error);
 		}
 	});
 
 	// POST /commands/:id/fail - Fail command with error
-	router.post("/:id/fail", (req: Request, res: Response) => {
+	router.post("/:id/fail", (req: Request, res: Response): void => {
 		const { id } = req.params;
+		const leaseRequest = validateLeaseRequest(req.body);
 		const body = req.body as FailRequest;
 
-		if (!body.agentId || !body.leaseId || !body.error) {
+		if (!leaseRequest || !body.error) {
 			res.status(400).json({ error: "Missing agentId, leaseId, or error" });
 			return;
 		}
 
 		try {
-			const success = db.failCommand(id, body.agentId, body.leaseId, body.error, body.result);
-
-			if (!success) {
-				res.status(409).json({ error: "Lease is not current" });
-				return;
-			}
-
+			service.failCommand(id, leaseRequest.agentId, leaseRequest.leaseId, body.error, body.result);
 			res.status(204).send();
 		} catch (error) {
-			console.error("Failed to fail command:", error);
-			res.status(500).json({ error: "Failed to fail command" });
+			if (error instanceof LeaseConflictError) {
+				sendLeaseConflict(res);
+				return;
+			}
+			sendInternalError(res, "fail command", error);
 		}
 	});
 
