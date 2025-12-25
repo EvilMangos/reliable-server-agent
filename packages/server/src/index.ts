@@ -75,8 +75,13 @@ export async function startServer(): Promise<ServerInstance> {
 	return { app, server, db };
 }
 
-// Start server when run directly
-startServer().catch((err) => {
-	console.error("Failed to start server:", err);
-	process.exit(1);
-});
+// Start server when run directly (not when imported as a module in tests)
+// Check if this file is being run directly by comparing the ESM main module pattern
+const isMainModule = process.argv[1]?.includes("packages/server") && !process.argv[1]?.includes("vitest");
+
+if (isMainModule) {
+	startServer().catch((err) => {
+		console.error("Failed to start server:", err);
+		process.exit(1);
+	});
+}
